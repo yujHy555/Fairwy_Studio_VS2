@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>FairwayStudio 2.0 - Course Architect & Tournament Simulation</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛳</text></svg>" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <!-- Next-Gen Championship Course Preloader -->
+    <div id="game-preloader" class="game-preloader">
+      <div class="preloader-backdrop"></div>
+      <div class="preloader-content">
+        <div class="preloader-crest">
+          <div class="preloader-pin-icon">⛳</div>
+        </div>
+        <div class="preloader-brand">FAIRWAY STUDIO 2.0</div>
+        <div class="preloader-tour-tag">NEXT-GEN 3D COURSE ARCHITECT & SIMULATION</div>
+        
+        <div class="preloader-progress-container">
+          <div class="preloader-progress-track">
+            <div id="preloader-bar" class="preloader-progress-bar"></div>
+          </div>
+          <div class="preloader-progress-info">
+            <span id="preloader-status" class="preloader-status">Initializing Course Engine...</span>
+            <span id="preloader-percent" class="preloader-percent">0%</span>
+          </div>
+        </div>
+        
+        <div class="preloader-course-info">
+          <span>HOLE 1 • PAR 4 • 385 METERS • DOGLEG RIGHT</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Terraforming Surface Computation Overlay -->
+    <div id="terraforming-overlay" class="terraforming-overlay hidden" aria-live="polite">
+      <div class="terraforming-card">
+        <div class="terraforming-spinner"></div>
+        <div class="terraforming-text-wrap">
+          <div id="terraforming-title" class="terraforming-title">TERRAFORMING</div>
+          <div id="terraforming-sub" class="terraforming-sub">Conforming 3D Terrain &amp; Analytical Collars...</div>
+        </div>
+        <div class="terraforming-progress-track">
+          <div id="terraforming-bar" class="terraforming-progress-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <canvas id="renderCanvas" touch-action="none"></canvas>
+
+    <!-- Bottom-Right Club Showcase Cards (Original 524x292 size with slick transitions) -->
+    <div id="club-card-container" class="club-card-container">
+      <img id="club-card-driver" class="club-card-img hidden" src="/images/driver_card.png" alt="Driver Max Distance 300m" />
+      <img id="club-card-putter" class="club-card-img hidden" src="/images/putter_card.png" alt="Putter" />
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
