@@ -16,10 +16,15 @@ import {
 } from '../terrain/TerrainGrid';
 import {
   LoadedMapNGSource,
+  CourseFootprintMask,
+  detectGolfCourseFootprint,
+  isPointInCourseFootprint,
   decode16BitPng,
   parseMapNGMetadata
 } from '../terrain/MapNGImporter';
 import { TraceToolMode } from '../terrain/FeatureTracer';
+import { CourseGuideModal, CourseGuideTelemetry } from './CourseGuideModal';
+import { KyalamiHoleGuide, KYALAMI_COURSE_GUIDE } from '../data/KyalamiCourseData';
 
 export interface OutlinerItem {
   id: string;
@@ -95,6 +100,8 @@ export interface UIEventCallbacks {
     enableBaseColorTex?: boolean;
     enableRoughnessTex?: boolean;
     enableNormalTex?: boolean;
+    satelliteMix?: number;
+    enableSatelliteTex?: boolean;
   }) => void;
   onResetGroundMaterial?: () => void;
   onFrameSelectedObject?: () => void;
@@ -124,7 +131,7 @@ export interface UIEventCallbacks {
   onResetObjectMaterial?: () => void;
   onFeatureTextureUpload?: (featureIndex: number, subId: FeatureSubMaterialId, slot: 'color' | 'roughness' | 'normal', dataUrl: string, fileName: string) => void;
   onObjectTextureUpload?: (slot: 'color' | 'roughness' | 'normal', dataUrl: string, fileName: string) => void;
-  onGroundTextureUpload?: (slot: 'color' | 'roughness' | 'normal', dataUrl: string, fileName: string) => void;
+  onGroundTextureUpload?: (slot: 'color' | 'roughness' | 'normal' | 'satellite', dataUrl: string, fileName: string) => void;
   onUndo?: () => void;
   onRedo?: () => void;
   onApplyMapNGImport?: (payload: {
@@ -134,7 +141,21 @@ export interface UIEventCallbacks {
     rotationDeg: number;
     elevationScale: number;
     clearFeatures: boolean;
+    isolateCourseOnly: boolean;
+    clearScenery: boolean;
+    kyalamiHoleNumber?: number;
   }) => void;
+  onApplySatelliteOnly?: (img: HTMLImageElement, fileName: string) => void;
+  onCourseOverview3D?: () => void;
+  onCreateFlatHole?: (opts: {
+    par: 3 | 4 | 5;
+    mode: 'new_course' | 'add_hole';
+    blankFlat: boolean;
+    courseName?: string;
+    kyalamiHoleNum?: number;
+  }) => void;
+  onSelectKyalamiHole?: (hole: KyalamiHoleGuide) => void;
+  onToggleCourseGuide?: () => void;
   onToggleSatelliteOverlay?: () => void;
   onSatelliteOpacityChange?: (opacity: number) => void;
   onTopDownTraceCam?: () => void;
@@ -348,6 +369,7 @@ export class UIController {
   private holeParLabel!: HTMLElement;
   private strokeCounterLabel!: HTMLElement;
   public overheadLayout!: OverheadHoleLayout;
+  private courseGuideModal!: CourseGuideModal;
 
   constructor(callbacks: UIEventCallbacks) {
     this.callbacks = callbacks;
@@ -357,9 +379,17 @@ export class UIController {
 
     this.createMainMenuOverlay();
     this.render();
+    this.courseGuideModal = new CourseGuideModal({
+      onSelectHoleIn3D: (hole) => {
+        this.callbacks.onSelectKyalamiHole?.(hole);
+      }
+    });
     this.setupListeners();
     this.overheadLayout = new OverheadHoleLayout('hud-overhead-layout-panel', (wx, wz) => {
       this.callbacks.onAimToOverheadPoint?.(wx, wz);
+    });
+    this.overheadLayout.setOnOpenCourseGuide(() => {
+      this.openCourseGuide();
     });
     this.updateHotkeysGuide('play');
   }
@@ -387,6 +417,9 @@ export class UIController {
                 <span>📂</span> Open Project from Disk (.json)
               </button>
               <div style="height: 1px; background: #334155; margin: 4px 0;"></div>
+              <button id="btn-action-new-hole" class="file-dropdown-item" style="width: 100%; text-align: left; padding: 8px 14px; background: none; border: none; color: #34d399; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+                <span>➕</span> New Flat Hole / Course...
+              </button>
               <button id="btn-action-course-branding" class="file-dropdown-item" style="width: 100%; text-align: left; padding: 8px 14px; background: none; border: none; color: #38bdf8; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
                 <span>🏷️</span> Course Branding & Logo...
               </button>
@@ -400,6 +433,14 @@ export class UIController {
           <div class="hole-selector" id="hole-tabs">
             <!-- Populated dynamically -->
           </div>
+
+          <button id="btn-open-new-hole" class="btn btn-icon" title="Create New Flat Hole or Start Course">
+            <span>➕ New Hole</span>
+          </button>
+
+          <button id="btn-header-course-guide" class="btn btn-icon" title="Interactive Kyalami Course Guide [L]">
+            <span>🗺️ Course Guide</span>
+          </button>
 
           <button id="btn-open-main-menu" class="btn btn-icon" title="Return to Main Menu [Esc]">
             <span>🏠 Menu</span>
@@ -549,9 +590,15 @@ export class UIController {
         <!-- MapNG Real-Course & Satellite Feature Tracing -->
         <div class="mapng-tool-card" id="mapng-tracing-section">
           <h4>🛰️ MapNG &amp; Satellite Tracing</h4>
-          <button id="btn-open-mapng-modal" class="btn btn-sm btn-block" style="background: rgba(14, 165, 233, 0.18); border-color: #38bdf8; color: #bae6fd; font-weight: 700; margin-bottom: 8px;">
+          <button id="btn-open-mapng-modal" class="btn btn-sm btn-block" style="background: rgba(14, 165, 233, 0.18); border-color: #38bdf8; color: #bae6fd; font-weight: 700; margin-bottom: 6px;">
             🗺️ Import MapNG Course...
           </button>
+
+          <div class="mapng-btn-row" style="margin-bottom: 6px;">
+            <button id="btn-course-overview-3d" class="btn btn-sm" title="Frame full isolated golf course in 3D">🌍 3D Course View</button>
+            <button id="btn-quick-upload-sat" class="btn btn-sm" title="Load &amp; apply Satellite Texture directly onto ground">🛰️ Load Satellite...</button>
+            <input type="file" id="input-quick-sat-upload" accept=".png,.jpg,.jpeg,.webp" style="display:none;" />
+          </div>
 
           <div class="mapng-btn-row" style="margin-bottom: 6px;">
             <button id="btn-toggle-satellite" class="btn btn-sm" title="Toggle Satellite Reference Overlay [T]">🛰️ Satellite [T]</button>
@@ -559,7 +606,7 @@ export class UIController {
           </div>
 
           <div class="slider-control" style="margin-bottom: 8px;">
-            <label>Satellite Opacity: <span id="val-satellite-opacity">0%</span></label>
+            <label>Ground ↔ Satellite Mix: <span id="val-satellite-opacity">0%</span></label>
             <input type="range" id="input-satellite-opacity" min="0" max="100" step="1" value="0" />
           </div>
 
@@ -592,9 +639,12 @@ export class UIController {
         <!-- Target Info Card -->
         <div class="hud-top-card">
           <div class="hole-meta">
-            <h2 id="hud-hole-title">Hole 1</h2>
+            <h2 id="hud-hole-title">Demo Hole</h2>
             <span id="hud-hole-par" class="par-tag">PAR 4</span>
-            <span class="stroke-tag">STOKES: <strong id="hud-strokes">0</strong></span>
+            <span class="stroke-tag">STROKES: <strong id="hud-strokes">0</strong></span>
+            <button id="btn-open-course-guide" class="btn-hud-guide" title="Open Interactive Course Guide [L]">
+              🗺️ Course Layout
+            </button>
           </div>
           <div class="distance-display">
             <div class="dist-num" id="hud-dist-to-pin">320<span class="unit">m</span></div>
@@ -668,14 +718,26 @@ export class UIController {
           <div class="overhead-header">
             <div class="overhead-title-group">
               <span class="overhead-badge">OVERHEAD</span>
-              <span id="overhead-hole-name" class="overhead-hole-name">HOLE 1 • PAR 4</span>
+              <span id="overhead-hole-name" class="overhead-hole-name">DEMO HOLE • PAR 4</span>
             </div>
-            <button id="btn-toggle-overhead-min" class="btn-overhead-tool" title="Minimize / Expand Overhead View [M]">▾</button>
+            <div class="overhead-header-actions">
+              <button id="btn-overhead-expand-guide" class="btn-overhead-tool" title="Open Interactive Course Guide [L]">🗺️</button>
+              <button id="btn-toggle-overhead-min" class="btn-overhead-tool" title="Minimize / Expand Overhead View [M]">▾</button>
+            </div>
           </div>
 
           <div class="overhead-body" id="overhead-body">
-            <!-- Dynamic Overhead 2D Canvas -->
+            <div class="overhead-view-pills">
+              <button id="btn-overhead-mode-graphic" class="btn-overhead-pill active" title="Course Overhead Graphic">Graphic</button>
+              <button id="btn-overhead-mode-radar" class="btn-overhead-pill" title="Live 3D Overhead Radar">3D Radar</button>
+              <button id="btn-overhead-dist-toggle" class="btn-overhead-pill" title="Toggle Distance Guide Image">Dist</button>
+            </div>
+
+            <!-- Dynamic Overhead 2D Canvas or Official Course Hole Graphic -->
             <div class="overhead-canvas-container">
+              <div id="overhead-graphic-wrap" class="overhead-graphic-wrap" style="display: none;">
+                <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
+              </div>
               <canvas id="overhead-hole-canvas" width="210" height="220"></canvas>
             </div>
 
@@ -871,7 +933,19 @@ export class UIController {
           </div>
           <button id="btn-toggle-dev-zone" class="btn-dev-collapse" title="Collapse / Expand Developer Zone">✕</button>
         </div>
+        <div class="dev-panel-tabs">
+          <button class="dev-panel-tab is-active" id="dev-tab-inspector" data-devtab="inspector">
+            <span>🛠️</span>
+            <span>Inspector</span>
+          </button>
+          <button class="dev-panel-tab" id="dev-tab-outliner" data-devtab="outliner">
+            <span>📑</span>
+            <span>Outliner</span>
+            <span id="dock-outliner-badge" class="dock-badge">0</span>
+          </button>
+        </div>
         <div class="dev-panel-body" id="dev-zone-body">
+          <div id="dev-pane-inspector" class="dev-tab-pane is-active">
           <!-- History: Undo & Redo -->
           <div class="dev-section" id="dev-history-section" style="padding-bottom: 4px;">
             <div class="dev-section-title">HISTORY (UNDO / REDO)</div>
@@ -1286,7 +1360,7 @@ export class UIController {
             <div class="dev-section-title">MAIN GROUND MATERIAL (GolfTerrain)</div>
             
             <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px; font-weight: 700; letter-spacing: 0.3px;">IMAGE MAPS (PREVIEW, TOGGLE & UPLOAD)</div>
-            <div class="dev-maps-grid">
+            <div class="dev-maps-grid dev-maps-grid-4">
               <!-- Color Map -->
               <div class="dev-map-card">
                 <div class="dev-map-header">
@@ -1296,7 +1370,7 @@ export class UIController {
                   </label>
                 </div>
                 <div class="dev-map-preview-wrap">
-                  <img id="ground-thumb-color" class="dev-map-preview-img" src="/textures/pbr_grass/grass_pbr_diff_1k.jpg" alt="Ground Color" />
+                  <img id="ground-thumb-color" class="dev-map-preview-img" src="/textures/pbr_grass/grass_pbr_diff_1k.jpg" onerror="this.onerror=null;this.src='/textures/pbr_grass/grass_pbr_diff_1k.jpg';" alt="Ground Color" />
                   <label class="dev-map-upload-overlay" title="Upload custom ground color texture">
                     <span>📁 Upload</span>
                     <input type="file" id="ground-upload-color" accept="image/*" style="display:none;" />
@@ -1311,13 +1385,13 @@ export class UIController {
               <!-- Roughness Map -->
               <div class="dev-map-card">
                 <div class="dev-map-header">
-                  <span class="dev-map-type">ROUGHNESS</span>
+                  <span class="dev-map-type">ROUGH</span>
                   <label class="dev-map-toggle" title="Toggle Ground Roughness Map">
                     <input type="checkbox" id="ground-mat-tex-rough" checked />
                   </label>
                 </div>
                 <div class="dev-map-preview-wrap">
-                  <img id="ground-thumb-rough" class="dev-map-preview-img" src="/textures/pbr_grass/grass_pbr_rough_512.jpg" alt="Ground Roughness" />
+                  <img id="ground-thumb-rough" class="dev-map-preview-img" src="/textures/pbr_grass/grass_pbr_rough_512.jpg" onerror="this.onerror=null;this.src='/textures/pbr_grass/grass_pbr_rough_512.jpg';" alt="Ground Roughness" />
                   <label class="dev-map-upload-overlay" title="Upload custom ground roughness map">
                     <span>📁 Upload</span>
                     <input type="file" id="ground-upload-rough" accept="image/*" style="display:none;" />
@@ -1338,7 +1412,7 @@ export class UIController {
                   </label>
                 </div>
                 <div class="dev-map-preview-wrap">
-                  <img id="ground-thumb-normal" class="dev-map-preview-img" src="/textures/pbr_grass/grass_pbr_nor_1k.jpg" alt="Ground Normal" />
+                  <img id="ground-thumb-normal" class="dev-map-preview-img" src="/textures/pbr_grass/grass_pbr_nor_1k.jpg" onerror="this.onerror=null;this.src='/textures/pbr_grass/grass_pbr_nor_1k.jpg';" alt="Ground Normal" />
                   <label class="dev-map-upload-overlay" title="Upload custom ground normal map">
                     <span>📁 Upload</span>
                     <input type="file" id="ground-upload-normal" accept="image/*" style="display:none;" />
@@ -1349,6 +1423,34 @@ export class UIController {
                   <span>📁 Upload</span>
                 </label>
               </div>
+
+              <!-- Satellite Ortho Mix Map -->
+              <div class="dev-map-card">
+                <div class="dev-map-header">
+                  <span class="dev-map-type">SATELLITE</span>
+                  <label class="dev-map-toggle" title="Toggle Course Satellite Ortho">
+                    <input type="checkbox" id="ground-mat-tex-satellite" />
+                  </label>
+                </div>
+                <div class="dev-map-preview-wrap">
+                  <div id="ground-satellite-empty" class="dev-map-empty-placeholder">🛰️ None</div>
+                  <img id="ground-thumb-satellite" class="dev-map-preview-img" style="display:none;" alt="Satellite Ortho" />
+                  <label class="dev-map-upload-overlay" title="Upload satellite ortho texture">
+                    <span>📁 Upload</span>
+                    <input type="file" id="ground-upload-satellite" accept="image/*" style="display:none;" />
+                  </label>
+                </div>
+                <div class="dev-map-filename" id="ground-name-satellite">No satellite</div>
+                <label class="dev-map-upload-btn" for="ground-upload-satellite" title="Upload satellite ortho texture">
+                  <span>📁 Upload</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="dev-control-row mt-2">
+              <span class="dev-control-lbl" title="Mix between main PBR grass texture (0%) and satellite ortho map (100%)">Satellite Mix</span>
+              <input type="range" id="ground-satellite-mix" min="0" max="100" step="1" value="0" class="dev-slider" />
+              <span id="val-ground-satellite-mix" class="dev-slider-val">0%</span>
             </div>
 
             <div class="dev-control-row mt-2">
@@ -1440,21 +1542,38 @@ export class UIController {
               <div class="dev-stat-card"><span class="dev-stat-val" id="stat-bunkers-count">0</span><span class="dev-stat-lbl">Bunkers</span></div>
             </div>
           </div>
+          </div>
+
+          <!-- Vertical Level Outliner Pane (Moved to Developer Zone) -->
+          <div id="dev-pane-outliner" class="dev-tab-pane dev-outliner-pane">
+            <div class="outliner-toolbar dev-outliner-toolbar">
+              <div class="outliner-search-wrap">
+                <span class="outliner-search-icon">🔍</span>
+                <input type="text" id="input-outliner-search" placeholder="Filter elements (green, tee, bunker, pine...)" />
+              </div>
+              <div class="outliner-filter-chips">
+                <button class="outliner-chip is-active" data-cat="all">All (<span id="cnt-outliner-all">0</span>)</button>
+                <button class="outliner-chip" data-cat="markers">Markers (<span id="cnt-outliner-markers">0</span>)</button>
+                <button class="outliner-chip" data-cat="architecture">Arch (<span id="cnt-outliner-arch">0</span>)</button>
+                <button class="outliner-chip" data-cat="foliage">Foliage (<span id="cnt-outliner-foliage">0</span>)</button>
+                <button class="outliner-chip" data-cat="rocks">Rocks (<span id="cnt-outliner-rocks">0</span>)</button>
+              </div>
+            </div>
+
+            <div class="outliner-list-container dev-outliner-list" id="outliner-items-list">
+              <!-- Dynamically rendered vertical rows -->
+            </div>
+          </div>
         </div>
       </aside>
 
-      <!-- Next-Gen Designer Bottom Dock (Collapsible Lighting & HDRI + Level Outliner) -->
+      <!-- Next-Gen Designer Bottom Dock (Collapsible Lighting & HDRI Atmosphere) -->
       <div id="designer-bottom-dock" class="designer-bottom-dock hidden">
         <div class="dock-header">
           <div class="dock-tabs">
             <button class="dock-tab is-active" id="dock-tab-lighting" data-tab="lighting">
               <span>☀️</span>
               <span>Lighting & Atmosphere</span>
-            </button>
-            <button class="dock-tab" id="dock-tab-outliner" data-tab="outliner">
-              <span>📑</span>
-              <span>Level Outliner</span>
-              <span id="dock-outliner-badge" class="dock-badge">0</span>
             </button>
           </div>
           
@@ -1489,13 +1608,17 @@ export class UIController {
                 <label>HDRI Rotation <span id="val-hdri-rot">0°</span></label>
                 <input type="range" id="input-hdri-rot" min="0" max="360" step="1" value="0" />
               </div>
+              <label class="dock-check-row" title="Keep directional sunlight and cast shadows synchronized with HDRI sky rotation">
+                <input type="checkbox" id="chk-sync-sun-hdri" checked />
+                <span>Sync Sun &amp; Shadows with HDRI</span>
+              </label>
               <div class="dock-slider-row">
                 <label>Sky Exposure / Intensity <span id="val-hdri-intensity">0.65</span></label>
                 <input type="range" id="input-hdri-intensity" min="0.1" max="2.5" step="0.05" value="0.65" />
               </div>
               <div class="dock-slider-row">
                 <label>HDRI Texture UV Scale <span id="val-hdri-uv-scale">1.00</span></label>
-                <input type="range" id="input-hdri-uv-scale" min="0.2" max="3.0" step="0.05" value="1.0" />
+                <input type="range" id="input-hdri-uv-scale" min="0.05" max="10.0" step="0.05" value="1.0" />
               </div>
               <div class="dock-slider-row">
                 <label>UV Offset (Width) <span id="val-hdri-uv-offset-u">0.00</span></label>
@@ -1538,27 +1661,6 @@ export class UIController {
               </div>
             </div>
           </div>
-
-          <!-- Tab 2: Level Outliner -->
-          <div id="dock-pane-outliner" class="dock-pane">
-            <div class="outliner-toolbar">
-              <div class="outliner-search-wrap">
-                <span class="outliner-search-icon">🔍</span>
-                <input type="text" id="input-outliner-search" placeholder="Filter level elements (green, tee, bunker, pine, rock...)" />
-              </div>
-              <div class="outliner-filter-chips">
-                <button class="outliner-chip is-active" data-cat="all">All (<span id="cnt-outliner-all">0</span>)</button>
-                <button class="outliner-chip" data-cat="markers">Markers (<span id="cnt-outliner-markers">0</span>)</button>
-                <button class="outliner-chip" data-cat="architecture">Architecture (<span id="cnt-outliner-arch">0</span>)</button>
-                <button class="outliner-chip" data-cat="foliage">Foliage (<span id="cnt-outliner-foliage">0</span>)</button>
-                <button class="outliner-chip" data-cat="rocks">Rocks (<span id="cnt-outliner-rocks">0</span>)</button>
-              </div>
-            </div>
-
-            <div class="outliner-list-container" id="outliner-items-list">
-              <!-- Dynamically rendered rows -->
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1593,23 +1695,40 @@ export class UIController {
           <div class="mapng-modal-header">
             <div>
               <h3 style="margin: 0; font-size: 16px; color: #38bdf8;">🗺️ Import MapNG Course Bundle</h3>
-              <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Load 16-bit PNG heightmap, satellite ortho texture &amp; export report JSON/MD</div>
+              <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Load 16-bit PNG heightmap, satellite ortho texture &amp; export report JSON/MD independently</div>
             </div>
             <button id="btn-close-mapng-modal" class="tips-modal-close" title="Close [Esc]">✕</button>
           </div>
 
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 12px; font-weight: 700; color: #e2e8f0; margin-bottom: 6px;">
-              Select MapNG Files (multi-select <code style="color:#38bdf8;">heightmap_*.png</code>, <code style="color:#38bdf8;">texture_*.png</code>, <code style="color:#38bdf8;">export_report.json</code>):
+          <div style="margin-bottom: 10px;">
+            <label style="display: block; font-size: 11px; font-weight: 700; color: #cbd5e1; margin-bottom: 5px;">
+              Quick Multi-File Bundle OR Load Files Separately Below (choosing a file keeps previously loaded files intact):
             </label>
-            <input type="file" id="input-mapng-files" multiple accept=".png,.jpg,.jpeg,.json,.md,.txt" style="width: 100%; padding: 8px; border-radius: 8px; background: rgba(15,23,42,0.85); border: 1px dashed rgba(56,189,248,0.5); color: #e2e8f0;" />
+            <input type="file" id="input-mapng-files" multiple accept=".png,.jpg,.jpeg,.webp,.json,.md,.txt" style="width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(15,23,42,0.85); border: 1px dashed rgba(56,189,248,0.45); color: #e2e8f0; font-size: 12px;" />
+            <div class="mapng-separate-inputs">
+              <label class="mapng-slot-btn" for="input-mapng-hm">
+                <span>⛰️ Heightmap PNG</span>
+                <input type="file" id="input-mapng-hm" accept=".png" style="display:none;" />
+              </label>
+              <label class="mapng-slot-btn mapng-slot-sat" for="input-mapng-sat">
+                <span>🛰️ Satellite Ortho</span>
+                <input type="file" id="input-mapng-sat" accept=".png,.jpg,.jpeg,.webp" style="display:none;" />
+              </label>
+              <label class="mapng-slot-btn" for="input-mapng-meta">
+                <span>📄 Metadata JSON/MD</span>
+                <input type="file" id="input-mapng-meta" accept=".json,.md,.txt" style="display:none;" />
+              </label>
+            </div>
           </div>
 
           <div class="mapng-modal-grid">
             <div>
               <canvas id="canvas-mapng-crop" width="280" height="280" class="mapng-crop-canvas"></canvas>
               <div style="font-size: 10px; color: #94a3b8; margin-top: 4px; text-align: center;">
-                Drag on preview to position 220m × 460m Active Hole Window
+                Drag crop box • Isolated Golf Course Perimeter highlighted (non-golf suburbs excluded)
+              </div>
+              <div id="mapng-footprint-badge" class="mapng-footprint-badge">
+                Course Isolation: Waiting for MapNG tile...
               </div>
             </div>
             <div>
@@ -1619,7 +1738,15 @@ export class UIController {
                 <div id="mapng-status-meta" class="mapng-status-item">Metadata JSON/MD: Defaults (0–78m)</div>
               </div>
 
-              <div class="slider-control" style="margin-top: 10px;">
+              <div class="slider-control" style="margin-top: 8px;">
+                <label style="font-size: 11px; color: #cbd5e1;">Hole Window Target (18-Hole Kyalami Presets):</label>
+                <select id="select-mapng-kyalami-hole" style="width: 100%; margin-top: 3px; padding: 5px 8px; border-radius: 6px; background: rgba(15,23,42,0.92); color: #e2e8f0; border: 1px solid rgba(56,189,248,0.35); font-size: 11px;">
+                  <option value="0">Full Isolated Golf Course (~1400m × 920m surround)</option>
+                  ${KYALAMI_COURSE_GUIDE.holes.map(h => `<option value="${h.number}">Hole ${h.number} • Par ${h.par} (${h.distances.yellow}m) • SI ${h.strokeIndex}</option>`).join('')}
+                </select>
+              </div>
+
+              <div class="slider-control" style="margin-top: 6px;">
                 <label>Hole Window Heading: <span id="val-mapng-rotation">0°</span></label>
                 <input type="range" id="input-mapng-rotation" min="0" max="355" step="5" value="0" />
               </div>
@@ -1629,19 +1756,100 @@ export class UIController {
                 <input type="range" id="input-mapng-elev-scale" min="0.25" max="2.0" step="0.05" value="1.0" />
               </div>
 
-              <div style="font-size: 11px; color: #cbd5e1; margin: 8px 0;">
+              <div style="font-size: 11px; color: #cbd5e1; margin: 4px 0 8px;">
                 Crop Center: <strong id="val-mapng-center">1024m, 1024m</strong>
               </div>
 
-              <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #e2e8f0; margin-bottom: 12px; cursor: pointer;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #86efac; margin-bottom: 6px; cursor: pointer; font-weight: 600;">
+                <input type="checkbox" id="chk-mapng-isolate-course" checked />
+                Identify golf course holes &amp; discard surrounding buildings/streets
+              </label>
+
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #e2e8f0; margin-bottom: 6px; cursor: pointer;">
                 <input type="checkbox" id="chk-mapng-clear-features" checked />
                 Clear procedural features &amp; start fresh for tracing
               </label>
 
-              <button id="btn-apply-mapng" class="btn btn-primary btn-block" disabled style="padding: 9px 14px; font-weight: 800;">
-                ⚡ Apply MapNG Terrain
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #e2e8f0; margin-bottom: 10px; cursor: pointer;">
+                <input type="checkbox" id="chk-mapng-clear-scenery" checked />
+                Clear Demo trees/rocks so imported course renders cleanly
+              </label>
+
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <button id="btn-apply-mapng" class="btn btn-primary btn-block" disabled style="padding: 9px 14px; font-weight: 800;">
+                  ⚡ Apply MapNG Terrain &amp; Isolated Course
+                </button>
+                <button id="btn-apply-mapng-sat-only" class="btn btn-secondary btn-block" disabled style="padding: 7px 12px; font-size: 12px;">
+                  🛰️ Apply Satellite Texture Only (Keep Terrain)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create New Flat Hole / Start Course Dialog -->
+      <div id="modal-new-hole" class="modal-overlay hidden">
+        <div class="new-hole-modal-card">
+          <div class="mapng-modal-header">
+            <div>
+              <h3 style="margin: 0; font-size: 16px; color: #34d399;">➕ Create Flat Course Hole</h3>
+              <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Keep the Demo Hole intact and start building a flat Par 3, Par 4, or Par 5</div>
+            </div>
+            <button id="btn-close-new-hole" class="tips-modal-close" title="Close [Esc]">✕</button>
+          </div>
+
+          <div class="new-hole-section">
+            <label class="new-hole-label">1. Select Hole Par &amp; Flat Playable Length</label>
+            <div class="new-hole-par-grid" id="new-hole-par-options">
+              <button class="new-hole-par-card" data-par="3">
+                <span class="nh-par-num">PAR 3</span>
+                <span class="nh-par-len">~155m Flat</span>
+                <span class="nh-par-desc">Short iron / tee-to-green template</span>
+              </button>
+              <button class="new-hole-par-card active" data-par="4">
+                <span class="nh-par-num">PAR 4</span>
+                <span class="nh-par-len">~365m Flat</span>
+                <span class="nh-par-desc">Classic drive + approach runway</span>
+              </button>
+              <button class="new-hole-par-card" data-par="5">
+                <span class="nh-par-num">PAR 5</span>
+                <span class="nh-par-len">~490m Flat</span>
+                <span class="nh-par-desc">Long championship reach hole</span>
               </button>
             </div>
+          </div>
+
+          <div class="new-hole-section">
+            <label class="new-hole-label">2. Course Action &amp; Optional Hole Link</label>
+            <div class="new-hole-mode-row">
+              <label class="new-hole-radio">
+                <input type="radio" name="new-hole-mode" value="new_course" checked />
+                <span>Start New Course (Hole 1)</span>
+              </label>
+              <label class="new-hole-radio">
+                <input type="radio" name="new-hole-mode" value="add_hole" />
+                <span>Append Next Hole to Course</span>
+              </label>
+            </div>
+            <input type="text" id="input-new-course-name" class="new-hole-input" value="Kyalami Country Club" placeholder="Course Name..." />
+            <div style="margin-top: 8px; display: flex; gap: 10px; align-items: center;">
+              <select id="select-new-kyalami-hole" class="new-hole-input" style="flex: 1;">
+                <option value="0">Optional: Link Kyalami Hole Pro Tip &amp; Graphic (None)</option>
+                ${KYALAMI_COURSE_GUIDE.holes.map(h => `<option value="${h.number}">Kyalami Hole ${h.number} (Par ${h.par} • ${h.distances.yellow}m)</option>`).join('')}
+              </select>
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #cbd5e1; white-space: nowrap; cursor: pointer;">
+                <input type="checkbox" id="chk-new-hole-blank" />
+                Blank flat only
+              </label>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
+            <button id="btn-cancel-new-hole" class="btn btn-secondary btn-sm">Cancel</button>
+            <button id="btn-confirm-new-hole" class="btn btn-primary btn-sm" style="padding: 8px 18px; font-weight: 800;">
+              ✨ Create Flat Hole
+            </button>
           </div>
         </div>
       </div>
@@ -1703,22 +1911,59 @@ export class UIController {
     });
   }
 
+  public isMainMenuOpen(): boolean {
+    return this.isMainMenuVisible;
+  }
+
+  public openCourseGuide(holeNumber?: number) {
+    if (!this.courseGuideModal) return;
+    if (holeNumber !== undefined) {
+      this.courseGuideModal.open(holeNumber);
+    } else {
+      this.courseGuideModal.toggle();
+    }
+    this.callbacks.onToggleCourseGuide?.();
+  }
+
+  public updateCourseGuideTelemetry(telemetry: CourseGuideTelemetry) {
+    this.courseGuideModal?.updateTelemetry(telemetry);
+  }
+
+  public syncSatelliteUi(pct: number) {
+    const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+    const sOpacity = document.getElementById('input-satellite-opacity') as HTMLInputElement | null;
+    const vOpacity = document.getElementById('val-satellite-opacity');
+    if (sOpacity) sOpacity.value = String(clamped);
+    if (vOpacity) vOpacity.innerText = `${clamped}%`;
+
+    const sMix = document.getElementById('ground-satellite-mix') as HTMLInputElement | null;
+    const vMix = document.getElementById('val-ground-satellite-mix');
+    if (sMix) sMix.value = String(clamped);
+    if (vMix) vMix.innerText = `${clamped}%`;
+  }
+
   public updateHolesList(holes: GolfHole[], activeIndex: number) {
     const container = document.getElementById('hole-tabs');
-    if (!container) return;
+    if (container) {
+      container.innerHTML = holes.map((h, i) => `
+        <button class="hole-tab-btn ${i === activeIndex ? 'active' : ''}" data-hole-idx="${i}">
+          ${h.isDemo ? 'Demo Hole' : `Hole ${h.number}`} (Par ${h.par})
+        </button>
+      `).join('');
 
-    container.innerHTML = holes.map((h, i) => `
-      <button class="hole-tab-btn ${i === activeIndex ? 'active' : ''}" data-hole-idx="${i}">
-        Hole ${h.number} (Par ${h.par})
-      </button>
-    `).join('');
-
-    container.querySelectorAll('.hole-tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.getAttribute('data-hole-idx') || '0', 10);
-        this.callbacks.onHoleSelect(idx);
+      container.querySelectorAll('.hole-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.getAttribute('data-hole-idx') || '0', 10);
+          this.callbacks.onHoleSelect(idx);
+        });
       });
-    });
+    }
+
+    const activeHole = holes[activeIndex] || holes[0];
+    const playMenuLbl = document.querySelector('#btn-menu-play .menu-option-label');
+    if (playMenuLbl && activeHole) {
+      playMenuLbl.textContent = activeHole.isDemo ? 'PLAY DEMO HOLE' : `PLAY HOLE ${activeHole.number}`;
+    }
   }
 
   public updateHUD(
@@ -1735,7 +1980,9 @@ export class UIController {
     if (ydsElem) ydsElem.innerText = `${Math.round(distMeters)}m to pin`;
 
     this.strokeCounterLabel.innerText = `${strokes}`;
-    this.holeTitleLabel.innerText = `Hole ${hole.number}: ${hole.name}`;
+    this.holeTitleLabel.innerText = hole.isDemo
+      ? `Demo Hole: ${hole.name}`
+      : `Hole ${hole.number}: ${hole.name}`;
     this.holeParLabel.innerText = `PAR ${hole.par}`;
 
     // Lie badge
@@ -2284,9 +2531,9 @@ export class UIController {
     overlay.className = 'main-menu-overlay hidden is-locked';
     overlay.innerHTML = `
       <div class="menu-bg-layer">
-        <img class="menu-bg-slide active" src="/images/menu/menu_bg_1.jpg" alt="Coastal Links Course" />
-        <img class="menu-bg-slide" src="/images/menu/menu_bg_2.jpg" alt="Desert Windmill Course" />
-        <img class="menu-bg-slide" src="/images/menu/menu_bg_3.jpg" alt="Red Rock Canyon Course" />
+        <img class="menu-bg-slide active" decoding="async" src="/images/menu/menu_bg_1.jpg" alt="Coastal Links Course" />
+        <img class="menu-bg-slide" decoding="async" src="/images/menu/menu_bg_2.jpg" alt="Desert Windmill Course" />
+        <img class="menu-bg-slide" decoding="async" src="/images/menu/menu_bg_3.jpg" alt="Red Rock Canyon Course" />
       </div>
       <div class="menu-scrim"></div>
 
@@ -2448,9 +2695,12 @@ export class UIController {
   public advanceMenuBackground() {
     const slides = this.menuOverlay?.querySelectorAll('.menu-bg-slide');
     if (!slides || slides.length === 0) return;
-    this.menuBgIndex = (this.menuBgIndex + 1) % slides.length;
+    const prevIdx = this.menuBgIndex % slides.length;
+    const nextIdx = (this.menuBgIndex + 1) % slides.length;
+    this.menuBgIndex = nextIdx;
     slides.forEach((slide, i) => {
-      slide.classList.toggle('active', i === this.menuBgIndex);
+      slide.classList.toggle('is-prev', i === prevIdx && i !== nextIdx);
+      slide.classList.toggle('active', i === nextIdx);
     });
   }
 
@@ -2458,6 +2708,12 @@ export class UIController {
     this.isMainMenuVisible = true;
     document.body.classList.add('in-main-menu');
     this.menuOverlay.classList.remove('hidden');
+    // Pre-decode all hero menu backdrops asynchronously so slide transitions never stutter
+    this.menuOverlay.querySelectorAll<HTMLImageElement>('.menu-bg-slide').forEach((img) => {
+      if (typeof img.decode === 'function') {
+        img.decode().catch(() => {});
+      }
+    });
     if (this.isMenuAuthenticated) {
       this.menuOverlay.classList.remove('is-locked');
       document.getElementById('menu-login-gate')?.classList.add('hidden');
@@ -2822,6 +3078,11 @@ export class UIController {
         this.callbacks.onSaveProjectDisk?.();
       });
 
+      document.getElementById('btn-action-new-hole')?.addEventListener('click', () => {
+        toggleFileDropdown(false);
+        this.openNewHoleModal();
+      });
+
       const openProjectInput = document.getElementById('input-open-project-file') as HTMLInputElement | null;
       document.getElementById('btn-action-open-project')?.addEventListener('click', () => {
         toggleFileDropdown(false);
@@ -2958,29 +3219,37 @@ export class UIController {
       }
     });
 
-    const tabLighting = document.getElementById('dock-tab-lighting');
-    const tabOutliner = document.getElementById('dock-tab-outliner');
-    const paneLighting = document.getElementById('dock-pane-lighting');
-    const paneOutliner = document.getElementById('dock-pane-outliner');
+    // Developer Zone Vertical Tabs (Inspector | Outliner)
+    const devTabInspector = document.getElementById('dev-tab-inspector');
+    const devTabOutliner = document.getElementById('dev-tab-outliner');
+    const devPaneInspector = document.getElementById('dev-pane-inspector');
+    const devPaneOutliner = document.getElementById('dev-pane-outliner');
 
-    const switchDockTab = (tab: 'lighting' | 'outliner') => {
-      this.activeDockTab = tab;
-      if (this.isDockCollapsed && this.bottomDock) {
-        this.isDockCollapsed = false;
-        this.bottomDock.classList.remove('is-collapsed');
-        if (collapseText) collapseText.innerText = 'Collapse';
-      }
-      tabLighting?.classList.toggle('is-active', tab === 'lighting');
-      tabOutliner?.classList.toggle('is-active', tab === 'outliner');
-      paneLighting?.classList.toggle('is-active', tab === 'lighting');
-      paneOutliner?.classList.toggle('is-active', tab === 'outliner');
+    const switchDevTab = (tab: 'inspector' | 'outliner') => {
+      this.activeDockTab = tab === 'outliner' ? 'outliner' : 'lighting';
+      devTabInspector?.classList.toggle('is-active', tab === 'inspector');
+      devTabOutliner?.classList.toggle('is-active', tab === 'outliner');
+      devPaneInspector?.classList.toggle('is-active', tab === 'inspector');
+      devPaneOutliner?.classList.toggle('is-active', tab === 'outliner');
       if (tab === 'outliner') {
         this.renderOutlinerList();
       }
     };
 
-    tabLighting?.addEventListener('click', () => switchDockTab('lighting'));
-    tabOutliner?.addEventListener('click', () => switchDockTab('outliner'));
+    devTabInspector?.addEventListener('click', () => switchDevTab('inspector'));
+    devTabOutliner?.addEventListener('click', () => switchDevTab('outliner'));
+
+    // Header & HUD Course Guide + New Flat Hole Triggers
+    document.getElementById('btn-header-course-guide')?.addEventListener('click', () => {
+      this.openCourseGuide();
+    });
+    document.getElementById('btn-open-course-guide')?.addEventListener('click', () => {
+      this.openCourseGuide();
+    });
+    document.getElementById('btn-open-new-hole')?.addEventListener('click', () => {
+      this.openNewHoleModal();
+    });
+    this.setupNewHoleModal();
 
     // HDRI & Skybox Tweaks Listeners
     const rotInput = document.getElementById('input-hdri-rot') as HTMLInputElement | null;
@@ -2989,6 +3258,11 @@ export class UIController {
       const v = Number((e.target as HTMLInputElement).value);
       if (valRot) valRot.innerText = `${v}°`;
       this.callbacks.onEnvironmentChange?.({ hdriRotation: v });
+    });
+
+    const syncSunChk = document.getElementById('chk-sync-sun-hdri') as HTMLInputElement | null;
+    syncSunChk?.addEventListener('change', () => {
+      this.callbacks.onEnvironmentChange?.({ syncSunWithHdri: syncSunChk.checked });
     });
 
     const hdriIntInput = document.getElementById('input-hdri-intensity') as HTMLInputElement | null;
@@ -3029,7 +3303,8 @@ export class UIController {
     sunAzInput?.addEventListener('input', (e) => {
       const v = Number((e.target as HTMLInputElement).value);
       if (valSunAz) valSunAz.innerText = `${v}°`;
-      this.callbacks.onEnvironmentChange?.({ sunAzimuth: v });
+      if (syncSunChk) syncSunChk.checked = false;
+      this.callbacks.onEnvironmentChange?.({ sunAzimuth: v, syncSunWithHdri: false });
     });
 
     const sunElInput = document.getElementById('input-sun-elevation') as HTMLInputElement | null;
@@ -3177,6 +3452,10 @@ export class UIController {
     const chkGroundColor = document.getElementById('ground-mat-tex-color') as HTMLInputElement | null;
     const chkGroundRough = document.getElementById('ground-mat-tex-rough') as HTMLInputElement | null;
     const chkGroundNormal = document.getElementById('ground-mat-tex-normal') as HTMLInputElement | null;
+    const chkGroundSatellite = document.getElementById('ground-mat-tex-satellite') as HTMLInputElement | null;
+    const groundSatMix = document.getElementById('ground-satellite-mix') as HTMLInputElement | null;
+    const valGroundSatMix = document.getElementById('val-ground-satellite-mix');
+
     chkGroundColor?.addEventListener('change', () => {
       this.callbacks.onGroundUvChange?.({ enableBaseColorTex: chkGroundColor.checked });
     });
@@ -3185,6 +3464,19 @@ export class UIController {
     });
     chkGroundNormal?.addEventListener('change', () => {
       this.callbacks.onGroundUvChange?.({ enableNormalTex: chkGroundNormal.checked });
+    });
+    chkGroundSatellite?.addEventListener('change', () => {
+      this.callbacks.onGroundUvChange?.({ enableSatelliteTex: chkGroundSatellite.checked });
+    });
+    groundSatMix?.addEventListener('input', () => {
+      const pct = Math.max(0, Math.min(100, Number(groundSatMix.value)));
+      if (valGroundSatMix) valGroundSatMix.innerText = `${Math.round(pct)}%`;
+      const sOpacity = document.getElementById('input-satellite-opacity') as HTMLInputElement | null;
+      const vOpacity = document.getElementById('val-satellite-opacity');
+      if (sOpacity) sOpacity.value = String(pct);
+      if (vOpacity) vOpacity.innerText = `${Math.round(pct)}%`;
+      this.callbacks.onSatelliteOpacityChange?.(pct / 100);
+      this.callbacks.onGroundUvChange?.({ satelliteMix: pct / 100 });
     });
 
     document.getElementById('btn-reset-ground-mat')?.addEventListener('click', () => {
@@ -3357,6 +3649,17 @@ export class UIController {
         return;
       }
 
+      const newHoleModal = document.getElementById('modal-new-hole');
+      if (e.key === 'Escape' && newHoleModal && !newHoleModal.classList.contains('hidden')) {
+        newHoleModal.classList.add('hidden');
+        return;
+      }
+
+      if (e.key === 'Escape' && this.courseGuideModal?.isVisible()) {
+        this.courseGuideModal.close();
+        return;
+      }
+
       if (e.key === 'Escape' && this.currentMode === 'designer' && this.activeTraceMode !== 'off') {
         this.callbacks.onTraceCancel?.();
         return;
@@ -3472,9 +3775,71 @@ export class UIController {
         this.callbacks.onFocusBall?.();
       } else if (e.code === 'KeyC') {
         this.callbacks.onCameraModeToggle();
+      } else if (e.code === 'KeyL') {
+        this.openCourseGuide();
       } else if (e.code === 'KeyR') {
         this.callbacks.onResetShot();
       }
+    });
+  }
+
+  public openNewHoleModal() {
+    const modal = document.getElementById('modal-new-hole');
+    if (modal) modal.classList.remove('hidden');
+  }
+
+  private setupNewHoleModal() {
+    const modal = document.getElementById('modal-new-hole');
+    const closeBtn = document.getElementById('btn-close-new-hole');
+    const cancelBtn = document.getElementById('btn-cancel-new-hole');
+    const confirmBtn = document.getElementById('btn-confirm-new-hole');
+    const kyalamiSel = document.getElementById('select-new-kyalami-hole') as HTMLSelectElement | null;
+    let selectedPar: 3 | 4 | 5 = 4;
+
+    const selectParCard = (par: 3 | 4 | 5) => {
+      selectedPar = par;
+      modal?.querySelectorAll('.new-hole-par-card').forEach((card) => {
+        const cardPar = Number(card.getAttribute('data-par'));
+        card.classList.toggle('active', cardPar === par);
+      });
+    };
+
+    modal?.querySelectorAll('.new-hole-par-card').forEach((card) => {
+      card.addEventListener('click', () => {
+        const par = Number(card.getAttribute('data-par') || '4') as 3 | 4 | 5;
+        selectParCard(par === 3 || par === 5 ? par : 4);
+      });
+    });
+
+    kyalamiSel?.addEventListener('change', () => {
+      const num = parseInt(kyalamiSel.value || '0', 10);
+      const found = KYALAMI_COURSE_GUIDE.holes.find((h) => h.number === num);
+      if (found) {
+        selectParCard(found.par);
+      }
+    });
+
+    const hideModal = () => modal?.classList.add('hidden');
+    closeBtn?.addEventListener('click', hideModal);
+    cancelBtn?.addEventListener('click', hideModal);
+    modal?.addEventListener('click', (e) => {
+      if (e.target === modal) hideModal();
+    });
+
+    confirmBtn?.addEventListener('click', () => {
+      const modeRadio = document.querySelector<HTMLInputElement>('input[name="new-hole-mode"]:checked');
+      const mode = (modeRadio?.value === 'add_hole' ? 'add_hole' : 'new_course') as 'new_course' | 'add_hole';
+      const blankChk = document.getElementById('chk-new-hole-blank') as HTMLInputElement | null;
+      const nameInput = document.getElementById('input-new-course-name') as HTMLInputElement | null;
+      const kyalamiNum = parseInt(kyalamiSel?.value || '0', 10);
+      hideModal();
+      this.callbacks.onCreateFlatHole?.({
+        par: selectedPar,
+        mode,
+        blankFlat: Boolean(blankChk?.checked),
+        courseName: nameInput?.value?.trim() || undefined,
+        kyalamiHoleNum: kyalamiNum > 0 ? kyalamiNum : undefined
+      });
     });
   }
 
@@ -3521,12 +3886,19 @@ export class UIController {
     enableBaseColorTex?: boolean;
     enableRoughnessTex?: boolean;
     enableNormalTex?: boolean;
+    enableSatelliteTex?: boolean;
+    satelliteMix?: number;
+    satelliteOpacity?: number;
+    satelliteEnabled?: boolean;
     colorMapUrl?: string;
     colorMapName?: string;
     roughnessMapUrl?: string;
     roughnessMapName?: string;
     normalMapUrl?: string;
     normalMapName?: string;
+    satelliteMapUrl?: string;
+    satelliteMapName?: string;
+    satellitePreviewDataUrl?: string;
   }, scrollIntoView = false) {
     const groundSec = document.getElementById('dev-ground-pbr-section');
     if (groundSec) groundSec.style.display = 'block';
@@ -3594,9 +3966,18 @@ export class UIController {
     const chkColor = document.getElementById('ground-mat-tex-color') as HTMLInputElement | null;
     const chkRough = document.getElementById('ground-mat-tex-rough') as HTMLInputElement | null;
     const chkNormal = document.getElementById('ground-mat-tex-normal') as HTMLInputElement | null;
+    const chkSat = document.getElementById('ground-mat-tex-satellite') as HTMLInputElement | null;
+    const satMixEl = document.getElementById('ground-satellite-mix') as HTMLInputElement | null;
+    const valSatMix = document.getElementById('val-ground-satellite-mix');
+
     if (chkColor) chkColor.checked = settings.enableBaseColorTex !== false;
     if (chkRough) chkRough.checked = settings.enableRoughnessTex !== false;
     if (chkNormal) chkNormal.checked = settings.enableNormalTex !== false;
+    const satSrc = settings.satellitePreviewDataUrl || settings.satelliteMapUrl || '';
+    const satMixPct = Math.round(Math.max(0, Math.min(1, settings.satelliteMix ?? settings.satelliteOpacity ?? 0)) * 100);
+    if (chkSat) chkSat.checked = settings.enableSatelliteTex ?? settings.satelliteEnabled ?? (Boolean(satSrc) && satMixPct > 0);
+    if (satMixEl) satMixEl.value = String(satMixPct);
+    if (valSatMix) valSatMix.innerText = `${satMixPct}%`;
 
     const thumbColor = document.getElementById('ground-thumb-color') as HTMLImageElement | null;
     const nameColor = document.getElementById('ground-name-color');
@@ -3604,20 +3985,44 @@ export class UIController {
     const nameRough = document.getElementById('ground-name-rough');
     const thumbNormal = document.getElementById('ground-thumb-normal') as HTMLImageElement | null;
     const nameNormal = document.getElementById('ground-name-normal');
+    const thumbSat = document.getElementById('ground-thumb-satellite') as HTMLImageElement | null;
+    const emptySat = document.getElementById('ground-satellite-empty');
+    const nameSat = document.getElementById('ground-name-satellite');
 
-    if (thumbColor && settings.colorMapUrl) thumbColor.src = settings.colorMapUrl;
-    if (nameColor && settings.colorMapName) nameColor.innerText = settings.colorMapName;
-    if (thumbRough && settings.roughnessMapUrl) thumbRough.src = settings.roughnessMapUrl;
-    if (nameRough && settings.roughnessMapName) nameRough.innerText = settings.roughnessMapName;
-    if (thumbNormal && settings.normalMapUrl) thumbNormal.src = settings.normalMapUrl;
-    if (nameNormal && settings.normalMapName) nameNormal.innerText = settings.normalMapName;
+    const safeGroundUrl = (url: string | undefined, fallback: string) => {
+      if (!url || !url.trim()) return fallback;
+      if (url.includes('grass_pbr_diff')) return '/textures/pbr_grass/grass_pbr_diff_1k.jpg';
+      if (url.includes('grass_pbr_nor')) return '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
+      if (url.includes('grass_pbr_rough')) return '/textures/pbr_grass/grass_pbr_rough_512.jpg';
+      return url;
+    };
+
+    if (thumbColor) thumbColor.src = safeGroundUrl(settings.colorMapUrl, '/textures/pbr_grass/grass_pbr_diff_1k.jpg');
+    if (nameColor) nameColor.innerText = settings.colorMapName || 'grass_pbr_diff_1k.jpg';
+    if (thumbRough) thumbRough.src = safeGroundUrl(settings.roughnessMapUrl, '/textures/pbr_grass/grass_pbr_rough_512.jpg');
+    if (nameRough) nameRough.innerText = settings.roughnessMapName || 'grass_pbr_rough_512.jpg';
+    if (thumbNormal) thumbNormal.src = safeGroundUrl(settings.normalMapUrl, '/textures/pbr_grass/grass_pbr_nor_1k.jpg');
+    if (nameNormal) nameNormal.innerText = settings.normalMapName || 'grass_pbr_nor_1k.jpg';
+
+    if (thumbSat && emptySat) {
+      if (satSrc) {
+        thumbSat.src = satSrc;
+        thumbSat.style.display = 'block';
+        emptySat.style.display = 'none';
+      } else {
+        thumbSat.removeAttribute('src');
+        thumbSat.style.display = 'none';
+        emptySat.style.display = 'flex';
+      }
+    }
+    if (nameSat) nameSat.innerText = settings.satelliteMapName || (satSrc ? 'course_satellite.jpg' : 'No satellite');
 
     // Also update selected info box to show Main Ground Layer
     const info = document.getElementById('dev-selected-info');
     if (info) {
       info.innerHTML = `
         <div class="dev-obj-name" style="color: #4ade80;">🌱 Main Ground (GolfTerrain)</div>
-        <div class="dev-obj-details">Material: Main Ground PBR<br/>Textures: Color, Roughness, NormalGL</div>
+        <div class="dev-obj-details">Material: Main Ground PBR${satSrc ? ' + Satellite Ortho' : ''}<br/>Textures: Color, Roughness, NormalGL${satSrc ? ', Satellite' : ''}</div>
       `;
     }
     if (scrollIntoView) {
@@ -4228,7 +4633,7 @@ export class UIController {
       thumbId: string,
       nameId: string,
       chkId: string,
-      slot: 'color' | 'roughness' | 'normal'
+      slot: 'color' | 'roughness' | 'normal' | 'satellite'
     ) => {
       const input = document.getElementById(inputId) as HTMLInputElement | null;
       input?.addEventListener('change', () => {
@@ -4241,7 +4646,14 @@ export class UIController {
           const thumb = document.getElementById(thumbId) as HTMLImageElement | null;
           const nameEl = document.getElementById(nameId);
           const chkEl = document.getElementById(chkId) as HTMLInputElement | null;
-          if (thumb) thumb.src = dataUrl;
+          if (thumb) {
+            thumb.src = dataUrl;
+            thumb.style.display = 'block';
+          }
+          if (slot === 'satellite') {
+            const emptySat = document.getElementById('ground-satellite-empty');
+            if (emptySat) emptySat.style.display = 'none';
+          }
           if (nameEl) nameEl.innerText = file.name;
           if (chkEl) chkEl.checked = true;
           this.callbacks.onGroundTextureUpload?.(slot, dataUrl, file.name);
@@ -4253,6 +4665,7 @@ export class UIController {
     bindGroundUpload('ground-upload-color', 'ground-thumb-color', 'ground-name-color', 'ground-mat-tex-color', 'color');
     bindGroundUpload('ground-upload-rough', 'ground-thumb-rough', 'ground-name-rough', 'ground-mat-tex-rough', 'roughness');
     bindGroundUpload('ground-upload-normal', 'ground-thumb-normal', 'ground-name-normal', 'ground-mat-tex-normal', 'normal');
+    bindGroundUpload('ground-upload-satellite', 'ground-thumb-satellite', 'ground-name-satellite', 'ground-mat-tex-satellite', 'satellite');
   }
 
   public updateFeatureList(features: any[], selectedIndex: number = -1) {
@@ -4625,11 +5038,28 @@ export class UIController {
     const defRough = '/textures/pbr_grass/grass_pbr_rough_512.jpg';
     const defNormal = '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
 
-    if (featThumbColor) featThumbColor.src = cUrls?.color || defColor;
+    const safeFeatUrl = (u: string | undefined, fb: string) => {
+      if (!u || !u.trim()) return fb;
+      if (u.includes('grass_pbr_diff')) return '/textures/pbr_grass/grass_pbr_diff_1k.jpg';
+      if (u.includes('grass_pbr_nor')) return '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
+      if (u.includes('grass_pbr_rough')) return '/textures/pbr_grass/grass_pbr_rough_512.jpg';
+      return u;
+    };
+
+    if (featThumbColor) {
+      featThumbColor.onerror = () => { featThumbColor.onerror = null; featThumbColor.src = defColor; };
+      featThumbColor.src = safeFeatUrl(cUrls?.color, defColor);
+    }
     if (featNameColor) featNameColor.innerText = cUrls?.colorName || 'short_grass_01.jpg';
-    if (featThumbRough) featThumbRough.src = cUrls?.roughness || defRough;
+    if (featThumbRough) {
+      featThumbRough.onerror = () => { featThumbRough.onerror = null; featThumbRough.src = defRough; };
+      featThumbRough.src = safeFeatUrl(cUrls?.roughness, defRough);
+    }
     if (featNameRough) featNameRough.innerText = cUrls?.roughnessName || 'grass_pbr_rough_512.jpg';
-    if (featThumbNormal) featThumbNormal.src = cUrls?.normal || defNormal;
+    if (featThumbNormal) {
+      featThumbNormal.onerror = () => { featThumbNormal.onerror = null; featThumbNormal.src = defNormal; };
+      featThumbNormal.src = safeFeatUrl(cUrls?.normal, defNormal);
+    }
     if (featNameNormal) featNameNormal.innerText = cUrls?.normalName || 'grass_pbr_nor_1k.jpg';
   }
 
@@ -4758,11 +5188,28 @@ export class UIController {
     const objThumbNormal = document.getElementById('obj-thumb-normal') as HTMLImageElement | null;
     const objNameNormal = document.getElementById('obj-name-normal');
 
-    if (objThumbColor) objThumbColor.src = info.colorMapUrl || '/textures/pbr_grass/grass_pbr_diff_1k.jpg';
+    const safeObjUrl = (u: string | undefined, fb: string) => {
+      if (!u || !u.trim()) return fb;
+      if (u.includes('grass_pbr_diff')) return '/textures/pbr_grass/grass_pbr_diff_1k.jpg';
+      if (u.includes('grass_pbr_nor')) return '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
+      if (u.includes('grass_pbr_rough')) return '/textures/pbr_grass/grass_pbr_rough_512.jpg';
+      return u;
+    };
+
+    if (objThumbColor) {
+      objThumbColor.onerror = () => { objThumbColor.onerror = null; objThumbColor.src = '/textures/pbr_grass/grass_pbr_diff_1k.jpg'; };
+      objThumbColor.src = safeObjUrl(info.colorMapUrl, '/textures/pbr_grass/grass_pbr_diff_1k.jpg');
+    }
     if (objNameColor) objNameColor.innerText = info.colorMapName || 'model_diff.jpg';
-    if (objThumbRough) objThumbRough.src = info.roughnessMapUrl || '/textures/pbr_grass/grass_pbr_rough_512.jpg';
+    if (objThumbRough) {
+      objThumbRough.onerror = () => { objThumbRough.onerror = null; objThumbRough.src = '/textures/pbr_grass/grass_pbr_rough_512.jpg'; };
+      objThumbRough.src = safeObjUrl(info.roughnessMapUrl, '/textures/pbr_grass/grass_pbr_rough_512.jpg');
+    }
     if (objNameRough) objNameRough.innerText = info.roughnessMapName || 'model_rough.jpg';
-    if (objThumbNormal) objThumbNormal.src = info.normalMapUrl || '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
+    if (objThumbNormal) {
+      objThumbNormal.onerror = () => { objThumbNormal.onerror = null; objThumbNormal.src = '/textures/pbr_grass/grass_pbr_nor_1k.jpg'; };
+      objThumbNormal.src = safeObjUrl(info.normalMapUrl, '/textures/pbr_grass/grass_pbr_nor_1k.jpg');
+    }
     if (objNameNormal) objNameNormal.innerText = info.normalMapName || 'model_nor.jpg';
   }
 
@@ -4802,6 +5249,7 @@ export class UIController {
 
       card.innerHTML = `
         <div class="hdri-card-thumb" style="background: ${preset.thumbnailBg};">
+          <img class="hdri-sphere-img" src="${preset.thumbnailImg}" alt="${preset.name} sphere preview" loading="lazy" />
           <span class="hdri-card-res-badge">${preset.resolution}</span>
         </div>
         <div class="hdri-card-name" title="${preset.name}">${preset.name}</div>
@@ -4835,6 +5283,11 @@ export class UIController {
     if (rotInput && env.hdriRotation !== undefined) {
       rotInput.value = String(env.hdriRotation);
       if (valRot) valRot.innerText = `${env.hdriRotation}°`;
+    }
+
+    const syncSunChk = document.getElementById('chk-sync-sun-hdri') as HTMLInputElement | null;
+    if (syncSunChk) {
+      syncSunChk.checked = env.syncSunWithHdri !== false;
     }
 
     const hdriInt = document.getElementById('input-hdri-intensity') as HTMLInputElement | null;
@@ -5168,6 +5621,13 @@ export class UIController {
     if (btn) btn.classList.toggle('mapng-trace-active', enabled && pct > 0);
     if (slider) slider.value = String(pct);
     if (label) label.innerText = enabled ? `${pct}%` : 'OFF';
+
+    const gMix = document.getElementById('ground-satellite-mix') as HTMLInputElement | null;
+    const gVal = document.getElementById('val-ground-satellite-mix');
+    const gChk = document.getElementById('ground-mat-tex-satellite') as HTMLInputElement | null;
+    if (gMix) gMix.value = String(pct);
+    if (gVal) gVal.innerText = `${pct}%`;
+    if (gChk && enabled) gChk.checked = pct > 0;
   }
 
   public updateTraceUi(mode: TraceToolMode, surface: SurfaceType, pointCount: number) {
@@ -5204,24 +5664,96 @@ export class UIController {
     const btnOpen = document.getElementById('btn-open-mapng-modal');
     const btnClose = document.getElementById('btn-close-mapng-modal');
     const filesInput = document.getElementById('input-mapng-files') as HTMLInputElement | null;
+    const hmInput = document.getElementById('input-mapng-hm') as HTMLInputElement | null;
+    const satInput = document.getElementById('input-mapng-sat') as HTMLInputElement | null;
+    const metaInput = document.getElementById('input-mapng-meta') as HTMLInputElement | null;
     const canvas = document.getElementById('canvas-mapng-crop') as HTMLCanvasElement | null;
     const statusHm = document.getElementById('mapng-status-hm');
     const statusSat = document.getElementById('mapng-status-sat');
     const statusMeta = document.getElementById('mapng-status-meta');
+    const footprintBadge = document.getElementById('mapng-footprint-badge');
+    const holeSelect = document.getElementById('select-mapng-kyalami-hole') as HTMLSelectElement | null;
     const rotInput = document.getElementById('input-mapng-rotation') as HTMLInputElement | null;
     const valRot = document.getElementById('val-mapng-rotation');
     const elevScaleInput = document.getElementById('input-mapng-elev-scale') as HTMLInputElement | null;
     const valElevScale = document.getElementById('val-mapng-elev-scale');
     const valCenter = document.getElementById('val-mapng-center');
+    const chkIsolate = document.getElementById('chk-mapng-isolate-course') as HTMLInputElement | null;
     const chkClear = document.getElementById('chk-mapng-clear-features') as HTMLInputElement | null;
+    const chkClearScenery = document.getElementById('chk-mapng-clear-scenery') as HTMLInputElement | null;
     const btnApply = document.getElementById('btn-apply-mapng') as HTMLButtonElement | null;
+    const btnApplySatOnly = document.getElementById('btn-apply-mapng-sat-only') as HTMLButtonElement | null;
 
+    let decodedHm: Awaited<ReturnType<typeof decode16BitPng>> | null = null;
+    let hmName = '';
+    let satImg: HTMLImageElement | null = null;
+    let satUrl: string | null = null;
+    let satName = '';
+    let metaTexts: { name: string; text: string }[] = [];
     let loadedSource: LoadedMapNGSource | null = null;
+    let footprintMask: CourseFootprintMask | null = null;
+    let footprintOverlayCanvas: HTMLCanvasElement | null = null;
     let hmPreviewCanvas: HTMLCanvasElement | null = null;
-    let cropCenterX = 1024;
-    let cropCenterZ = 1024;
+    let cropCenterX = 1095;
+    let cropCenterZ = 1080;
     let rotationDeg = 0;
     let elevationScale = 1.0;
+    let selectedKyalamiHole = 0;
+
+    const buildFootprintOverlay = (fp: CourseFootprintMask, spanW: number, spanH: number) => {
+      const fCanvas = document.createElement('canvas');
+      const sz = 280;
+      fCanvas.width = sz;
+      fCanvas.height = sz;
+      const fCtx = fCanvas.getContext('2d');
+      if (!fCtx) return null;
+
+      fCtx.fillStyle = 'rgba(2, 6, 23, 0.58)';
+      fCtx.fillRect(0, 0, sz, sz);
+
+      if (fp.polygonMeters && fp.polygonMeters.length >= 3) {
+        fCtx.save();
+        fCtx.globalCompositeOperation = 'destination-out';
+        fCtx.beginPath();
+        fp.polygonMeters.forEach((pt, i) => {
+          const px = (pt.x / Math.max(1, spanW)) * sz;
+          const py = (pt.z / Math.max(1, spanH)) * sz;
+          if (i === 0) fCtx.moveTo(px, py);
+          else fCtx.lineTo(px, py);
+        });
+        fCtx.closePath();
+        fCtx.fill();
+        fCtx.restore();
+
+        fCtx.strokeStyle = '#22c55e';
+        fCtx.lineWidth = 1.8;
+        fCtx.beginPath();
+        fp.polygonMeters.forEach((pt, i) => {
+          const px = (pt.x / Math.max(1, spanW)) * sz;
+          const py = (pt.z / Math.max(1, spanH)) * sz;
+          if (i === 0) fCtx.moveTo(px, py);
+          else fCtx.lineTo(px, py);
+        });
+        fCtx.closePath();
+        fCtx.stroke();
+      } else if (fp.gridMask && fp.gridRes) {
+        const res = fp.gridRes;
+        const cellW = sz / res;
+        fCtx.save();
+        fCtx.globalCompositeOperation = 'destination-out';
+        for (let gz = 0; gz < res; gz++) {
+          for (let gx = 0; gx < res; gx++) {
+            const eastM = ((gx + 0.5) / res) * spanW;
+            const southM = ((gz + 0.5) / res) * spanH;
+            if (isPointInCourseFootprint(fp, eastM, southM, spanW, spanH)) {
+              fCtx.fillRect(gx * cellW, gz * cellW, cellW + 0.6, cellW + 0.6);
+            }
+          }
+        }
+        fCtx.restore();
+      }
+      return fCanvas;
+    };
 
     const drawCropPreview = () => {
       if (!canvas) return;
@@ -5237,10 +5769,14 @@ export class UIController {
       const spanW = (loadedSource?.heightmap.width || 2048) * mpp;
       const spanH = (loadedSource?.heightmap.height || 2048) * mpp;
 
-      if (loadedSource?.satelliteImg) {
-        ctx.drawImage(loadedSource.satelliteImg, 0, 0, cw, ch);
+      if (satImg) {
+        ctx.drawImage(satImg, 0, 0, cw, ch);
       } else if (hmPreviewCanvas) {
         ctx.drawImage(hmPreviewCanvas, 0, 0, cw, ch);
+      }
+
+      if (chkIsolate?.checked && footprintOverlayCanvas) {
+        ctx.drawImage(footprintOverlayCanvas, 0, 0, cw, ch);
       }
 
       const cxPx = (cropCenterX / spanW) * cw;
@@ -5252,7 +5788,7 @@ export class UIController {
       ctx.save();
       ctx.translate(cxPx, cyPx);
       ctx.rotate(rotRad);
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.20)';
       ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 2;
       ctx.fillRect(-boxW * 0.5, -boxH * 0.5, boxW, boxH);
@@ -5272,7 +5808,7 @@ export class UIController {
       if (valCenter) valCenter.innerText = `${Math.round(cropCenterX)}m, ${Math.round(cropCenterZ)}m`;
     };
 
-    const buildHmPreview = (src: LoadedMapNGSource) => {
+    const buildHmPreview = (hm: NonNullable<typeof decodedHm>) => {
       const pCanvas = document.createElement('canvas');
       const sz = 280;
       pCanvas.width = sz;
@@ -5280,7 +5816,7 @@ export class UIController {
       const pCtx = pCanvas.getContext('2d');
       if (!pCtx) return null;
       const imgData = pCtx.createImageData(sz, sz);
-      const { width, height, pixels } = src.heightmap;
+      const { width, height, pixels } = hm;
       for (let py = 0; py < sz; py++) {
         const sy = Math.min(height - 1, Math.floor((py / sz) * height));
         for (let px = 0; px < sz; px++) {
@@ -5297,6 +5833,151 @@ export class UIController {
       return pCanvas;
     };
 
+    const rebuildMapNGState = (recenterIfNewHm = false) => {
+      const metaParsed = parseMapNGMetadata(metaTexts);
+      const mpp = metaParsed.metersPerPixel ?? 1.0;
+      const minH = metaParsed.minHeightMeters ?? 0;
+      const maxH = metaParsed.maxHeightMeters ?? 78;
+      const wPx = metaParsed.sourceWidthPx || decodedHm?.width || 2048;
+      const hPx = metaParsed.sourceHeightPx || decodedHm?.height || 2048;
+      const metaObj = {
+        levelName: metaParsed.levelName || (hmName ? hmName.replace(/\.png$/i, '') : 'MapNG Course'),
+        sourceWidthPx: wPx,
+        sourceHeightPx: hPx,
+        metersPerPixel: mpp,
+        minHeightMeters: minH,
+        maxHeightMeters: maxH,
+        centerLat: metaParsed.centerLat,
+        centerLon: metaParsed.centerLon
+      };
+
+      if (decodedHm) {
+        const tempSrc: LoadedMapNGSource = {
+          meta: metaObj,
+          heightmap: decodedHm,
+          satelliteImg: satImg,
+          satelliteUrl: satUrl
+        };
+        footprintMask = detectGolfCourseFootprint(tempSrc);
+        tempSrc.courseFootprint = footprintMask;
+        loadedSource = tempSrc;
+        footprintOverlayCanvas = buildFootprintOverlay(footprintMask, wPx * mpp, hPx * mpp);
+
+        if (recenterIfNewHm && selectedKyalamiHole === 0) {
+          cropCenterX = Math.abs((metaParsed.centerLat ?? 0) + 25.9754) < 0.08 ? 1095 : Math.round(wPx * mpp * 0.5);
+          cropCenterZ = Math.abs((metaParsed.centerLon ?? 0) - 28.0589) < 0.08 ? 1080 : Math.round(hPx * mpp * 0.5);
+        }
+      } else if (satImg) {
+        const dummyHm = { width: wPx, height: hPx, bitDepth: 16, pixels: new Uint16Array(wPx * hPx) };
+        const pseudoSrc: LoadedMapNGSource = {
+          meta: metaObj,
+          heightmap: dummyHm,
+          satelliteImg: satImg,
+          satelliteUrl: satUrl
+        };
+        footprintMask = detectGolfCourseFootprint(pseudoSrc);
+        footprintOverlayCanvas = buildFootprintOverlay(footprintMask, wPx * mpp, hPx * mpp);
+      }
+
+      if (statusHm && decodedHm) {
+        statusHm.classList.add('ready');
+        statusHm.innerText = `✅ Heightmap: ${decodedHm.width}×${decodedHm.height} (${decodedHm.bitDepth}-bit) • ${hmName}`;
+      }
+      if (statusSat) {
+        statusSat.classList.toggle('ready', Boolean(satImg));
+        statusSat.innerText = satImg
+          ? `✅ Satellite Ortho: ${satImg.width}×${satImg.height} (${satName || 'loaded'})`
+          : '⚠️ No satellite texture attached (grayscale DEM only)';
+      }
+      if (statusMeta) {
+        statusMeta.classList.toggle('ready', metaTexts.length > 0);
+        statusMeta.innerText = `${metaTexts.length > 0 ? '✅' : 'ℹ️'} ${metaObj.levelName} (${minH.toFixed(1)}m – ${maxH.toFixed(1)}m, ${wPx}×${hPx}px)`;
+      }
+      if (footprintBadge && footprintMask) {
+        const keptPct = Math.round(footprintMask.coveragePct);
+        const discardedPct = Math.max(0, 100 - keptPct);
+        footprintBadge.classList.add('is-ready');
+        footprintBadge.innerText = `⛳ ${footprintMask.sourceLabel}: ${keptPct}% golf course kept (~${discardedPct}% non-golf excluded)`;
+      }
+
+      if (btnApply) btnApply.disabled = !loadedSource;
+      if (btnApplySatOnly) btnApplySatOnly.disabled = !satImg;
+      drawCropPreview();
+    };
+
+    const loadImageFromFile = (file: File): Promise<{ img: HTMLImageElement | null; url: string }> => {
+      const url = URL.createObjectURL(file);
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ img, url });
+        img.onerror = () => resolve({ img: null, url });
+        img.src = url;
+      });
+    };
+
+    const ingestMapNGFiles = async (files: File[]) => {
+      if (!files.length) return;
+      let hmFile: File | null = null;
+      let satFile: File | null = null;
+      const newMetas: { name: string; text: string }[] = [];
+
+      for (const file of files) {
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith('.json') || lower.endsWith('.md') || lower.endsWith('.txt')) {
+          newMetas.push({ name: file.name, text: await file.text() });
+        } else if (lower.includes('heightmap')) {
+          hmFile = file;
+        } else if (lower.includes('texture') || lower.includes('satellite') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp')) {
+          satFile = file;
+        } else if (lower.endsWith('.png')) {
+          const head = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+          const isPng = head[0] === 0x89 && head[1] === 0x50;
+          if (isPng && head[24] === 16) {
+            hmFile = file;
+          } else {
+            satFile = file;
+          }
+        }
+      }
+
+      try {
+        if (newMetas.length > 0) {
+          for (const nm of newMetas) {
+            const idx = metaTexts.findIndex((m) => m.name === nm.name);
+            if (idx >= 0) metaTexts[idx] = nm;
+            else metaTexts.push(nm);
+          }
+        }
+
+        if (satFile) {
+          const res = await loadImageFromFile(satFile);
+          if (res.img) {
+            satImg = res.img;
+            satUrl = res.url;
+            satName = satFile.name;
+          } else {
+            this.showToast(`Could not decode satellite image: ${satFile.name}`, 'warning', 3000);
+          }
+        }
+
+        if (hmFile) {
+          if (statusHm) {
+            statusHm.classList.remove('ready');
+            statusHm.innerText = `Decoding ${hmFile.name}...`;
+          }
+          const hmBuf = await hmFile.arrayBuffer();
+          decodedHm = await decode16BitPng(hmBuf);
+          hmName = hmFile.name;
+          hmPreviewCanvas = buildHmPreview(decodedHm);
+        }
+
+        rebuildMapNGState(Boolean(hmFile));
+      } catch (err: any) {
+        console.error('MapNG decode error:', err);
+        this.showToast(`MapNG Import Error: ${err?.message || 'Failed to decode file'}`, 'penalty', 4000);
+      }
+    };
+
     btnOpen?.addEventListener('click', () => {
       modal?.classList.remove('hidden');
       drawCropPreview();
@@ -5308,102 +5989,77 @@ export class UIController {
 
     filesInput?.addEventListener('change', async () => {
       const files = Array.from(filesInput.files || []);
-      if (!files.length) return;
+      await ingestMapNGFiles(files);
+      filesInput.value = '';
+    });
 
-      const metaTexts: { name: string; text: string }[] = [];
-      let hmFile: File | null = null;
-      let satFile: File | null = null;
-
-      for (const file of files) {
-        const lower = file.name.toLowerCase();
-        if (lower.endsWith('.json') || lower.endsWith('.md') || lower.endsWith('.txt')) {
-          metaTexts.push({ name: file.name, text: await file.text() });
-        } else if (lower.includes('heightmap')) {
-          hmFile = file;
-        } else if (lower.includes('texture') || lower.includes('satellite') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-          satFile = file;
-        } else if (lower.endsWith('.png')) {
-          // Probe header bytes: PNG grayscale/16-bit vs JFIF/RGB satellite
-          const head = new Uint8Array(await file.slice(0, 32).arrayBuffer());
-          const isPng = head[0] === 0x89 && head[1] === 0x50;
-          if (isPng && head[24] === 16) {
-            hmFile = file;
-          } else {
-            satFile = file;
-          }
-        }
-      }
-
-      if (!hmFile) {
-        this.showToast('Please include the 16-bit MapNG heightmap PNG file.', 'warning', 3200);
-        return;
-      }
-
+    hmInput?.addEventListener('change', async () => {
+      const file = hmInput.files?.[0];
+      if (!file) return;
       try {
         if (statusHm) {
           statusHm.classList.remove('ready');
-          statusHm.innerText = `Decoding ${hmFile.name}...`;
+          statusHm.innerText = `Decoding ${file.name}...`;
         }
-        const hmBuf = await hmFile.arrayBuffer();
-        const heightmap = await decode16BitPng(hmBuf);
-        const metaParsed = parseMapNGMetadata(metaTexts);
-
-        const mpp = metaParsed.metersPerPixel ?? 1.0;
-        const minH = metaParsed.minHeightMeters ?? 0;
-        const maxH = metaParsed.maxHeightMeters ?? 78;
-
-        let satImg: HTMLImageElement | null = null;
-        let satUrl: string | null = null;
-        if (satFile) {
-          satUrl = URL.createObjectURL(satFile);
-          satImg = await new Promise<HTMLImageElement | null>((resolve) => {
-            const img = new Image();
-            img.onload = () => resolve(img);
-            img.onerror = () => resolve(null);
-            img.src = satUrl!;
-          });
-        }
-
-        loadedSource = {
-          meta: {
-            levelName: metaParsed.levelName || hmFile.name.replace(/\.png$/i, ''),
-            sourceWidthPx: metaParsed.sourceWidthPx || heightmap.width,
-            sourceHeightPx: metaParsed.sourceHeightPx || heightmap.height,
-            metersPerPixel: mpp,
-            minHeightMeters: minH,
-            maxHeightMeters: maxH,
-            centerLat: metaParsed.centerLat,
-            centerLon: metaParsed.centerLon
-          },
-          heightmap,
-          satelliteImg: satImg,
-          satelliteUrl: satUrl
-        };
-
-        hmPreviewCanvas = buildHmPreview(loadedSource);
-        cropCenterX = Math.round(heightmap.width * mpp * 0.5);
-        cropCenterZ = Math.round(heightmap.height * mpp * 0.5);
-
-        if (statusHm) {
-          statusHm.classList.add('ready');
-          statusHm.innerText = `✅ Heightmap: ${heightmap.width}×${heightmap.height} (${heightmap.bitDepth}-bit PNG)`;
-        }
-        if (statusSat) {
-          statusSat.classList.toggle('ready', Boolean(satImg));
-          statusSat.innerText = satImg
-            ? `✅ Satellite Ortho: ${satImg.width}×${satImg.height} loaded`
-            : '⚠️ No satellite texture attached (grayscale DEM only)';
-        }
-        if (statusMeta) {
-          statusMeta.classList.toggle('ready', metaTexts.length > 0);
-          statusMeta.innerText = `${metaTexts.length > 0 ? '✅' : 'ℹ️'} ${loadedSource.meta.levelName} (${minH.toFixed(1)}m – ${maxH.toFixed(1)}m)`;
-        }
-        if (btnApply) btnApply.disabled = false;
-        drawCropPreview();
+        decodedHm = await decode16BitPng(await file.arrayBuffer());
+        hmName = file.name;
+        hmPreviewCanvas = buildHmPreview(decodedHm);
+        rebuildMapNGState(true);
       } catch (err: any) {
-        console.error('MapNG decode error:', err);
-        this.showToast(`MapNG Import Error: ${err?.message || 'Failed to decode PNG'}`, 'penalty', 4000);
+        this.showToast(`Heightmap Error: ${err?.message || 'Invalid 16-bit PNG'}`, 'penalty', 3600);
+      } finally {
+        hmInput.value = '';
       }
+    });
+
+    satInput?.addEventListener('change', async () => {
+      const file = satInput.files?.[0];
+      if (!file) return;
+      const res = await loadImageFromFile(file);
+      if (res.img) {
+        satImg = res.img;
+        satUrl = res.url;
+        satName = file.name;
+        rebuildMapNGState(false);
+        this.showToast(`🛰️ Loaded Satellite Texture: ${file.name} (${res.img.width}×${res.img.height})`, 'success', 2600);
+      } else {
+        this.showToast(`Could not load satellite image: ${file.name}`, 'warning', 3000);
+      }
+      satInput.value = '';
+    });
+
+    metaInput?.addEventListener('change', async () => {
+      const file = metaInput.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const idx = metaTexts.findIndex((m) => m.name === file.name);
+      if (idx >= 0) metaTexts[idx] = { name: file.name, text };
+      else metaTexts.push({ name: file.name, text });
+      rebuildMapNGState(false);
+      metaInput.value = '';
+    });
+
+    holeSelect?.addEventListener('change', () => {
+      selectedKyalamiHole = parseInt(holeSelect.value || '0', 10);
+      if (selectedKyalamiHole > 0) {
+        const hole = KYALAMI_COURSE_GUIDE.holes.find((h) => h.number === selectedKyalamiHole);
+        if (hole) {
+          cropCenterX = hole.mapngCropHint.cropCenterX;
+          cropCenterZ = hole.mapngCropHint.cropCenterZ;
+          rotationDeg = hole.mapngCropHint.rotationDeg;
+        }
+      } else {
+        cropCenterX = 1095;
+        cropCenterZ = 1080;
+        rotationDeg = 0;
+      }
+      if (rotInput) rotInput.value = String(rotationDeg);
+      if (valRot) valRot.innerText = `${rotationDeg}°`;
+      drawCropPreview();
+    });
+
+    chkIsolate?.addEventListener('change', () => {
+      drawCropPreview();
     });
 
     let isDraggingCrop = false;
@@ -5449,11 +6105,42 @@ export class UIController {
         cropCenterZ,
         rotationDeg,
         elevationScale,
-        clearFeatures: chkClear ? chkClear.checked : true
+        clearFeatures: chkClear ? chkClear.checked : true,
+        isolateCourseOnly: chkIsolate ? chkIsolate.checked : true,
+        clearScenery: chkClearScenery ? chkClearScenery.checked : true,
+        kyalamiHoleNumber: selectedKyalamiHole > 0 ? selectedKyalamiHole : undefined
       });
     });
 
-    // Designer Panel Satellite & Tracing buttons
+    btnApplySatOnly?.addEventListener('click', () => {
+      if (!satImg) return;
+      modal?.classList.add('hidden');
+      this.callbacks.onApplySatelliteOnly?.(satImg, satName || 'satellite_ortho.png');
+    });
+
+    // Designer Panel Satellite, Course View & Tracing buttons
+    document.getElementById('btn-course-overview-3d')?.addEventListener('click', () => {
+      this.callbacks.onCourseOverview3D?.();
+    });
+
+    const quickSatInput = document.getElementById('input-quick-sat-upload') as HTMLInputElement | null;
+    document.getElementById('btn-quick-upload-sat')?.addEventListener('click', () => {
+      quickSatInput?.click();
+    });
+    quickSatInput?.addEventListener('change', async () => {
+      const file = quickSatInput.files?.[0];
+      if (!file) return;
+      const res = await loadImageFromFile(file);
+      if (res.img) {
+        satImg = res.img;
+        satUrl = res.url;
+        satName = file.name;
+        rebuildMapNGState(false);
+        this.callbacks.onApplySatelliteOnly?.(res.img, file.name);
+      }
+      quickSatInput.value = '';
+    });
+
     document.getElementById('btn-toggle-satellite')?.addEventListener('click', () => {
       this.callbacks.onToggleSatelliteOverlay?.();
     });
@@ -5462,6 +6149,7 @@ export class UIController {
     });
     document.getElementById('input-satellite-opacity')?.addEventListener('input', (e) => {
       const pct = Number((e.target as HTMLInputElement).value);
+      this.syncSatelliteUi(pct);
       this.callbacks.onSatelliteOpacityChange?.(pct / 100);
     });
 

@@ -1860,12 +1860,65 @@ export class TerrainGrid {
   private cachedRoughAvgColor: { r: number; g: number; b: number } | null = null;
 
   public satelliteOverlayTex: Texture | null = null;
+  public satellitePreviewDataUrl: string | null = null;
   public satelliteOpacity: number = 0.0;
   public satelliteEnabled: boolean = false;
   public overlayOverFeatures: number = 0.0;
   public tracedSdfTex: RawTexture | null = null;
   private tracedSdfData: Uint8Array | null = null;
   private hasAnyTracedSdf: boolean = false;
+  public courseBoundaryMask: Uint8Array | null = null;
+
+  /**
+   * Rewrites legacy/pre-Stage-1 2K/missing texture paths to the current 1K/512 PBR assets
+   * so imported or saved courses never display broken image map icons in Developer Zone.
+   */
+  public static sanitizeTextureUrl(
+    url: string | undefined,
+    slot: 'color' | 'roughness' | 'normal'
+  ): string | undefined {
+    if (!url || typeof url !== 'string') return url;
+    if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+    const lower = url.toLowerCase();
+    if (
+      lower.includes('grass_pbr_diff.jpg') ||
+      lower.includes('grass_pbr_diff_2k') ||
+      lower.includes('grass_pbr_diff_4k')
+    ) {
+      return '/textures/pbr_grass/grass_pbr_diff_1k.jpg';
+    }
+    if (
+      lower.includes('grass_pbr_nor.jpg') ||
+      lower.includes('grass_pbr_nor_disp') ||
+      lower.includes('grass_pbr_nor_2k')
+    ) {
+      return '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
+    }
+    if (
+      lower.includes('grass_pbr_rough.jpg') ||
+      lower.includes('grass_pbr_rough_2k') ||
+      lower.includes('grass_pbr_rough_1k')
+    ) {
+      return '/textures/pbr_grass/grass_pbr_rough_512.jpg';
+    }
+    if (lower.includes('brown_mud_leaves_diff')) {
+      return '/textures/pbr_rough/brown_mud_leaves_diff_512.jpg';
+    }
+    if (lower.includes('brown_mud_leaves_rough')) {
+      return '/textures/pbr_rough/brown_mud_leaves_rough_512.jpg';
+    }
+    if (lower.includes('brown_mud_leaves_nor')) {
+      return '/textures/pbr_rough/brown_mud_leaves_nor_512.jpg';
+    }
+    if (!lower.startsWith('/textures/') && !lower.startsWith('http')) {
+      return slot === 'color'
+        ? '/textures/pbr_grass/grass_pbr_diff_1k.jpg'
+        : slot === 'roughness'
+        ? '/textures/pbr_grass/grass_pbr_rough_512.jpg'
+        : '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
+    }
+    return url;
+  }
 
   /**
    * Monotonic specular curve: 0 = 0% (pure matte black specular),
@@ -3228,8 +3281,9 @@ export class TerrainGrid {
       this.satelliteOverlayTex.dispose();
       this.satelliteOverlayTex = null;
     }
+    this.satellitePreviewDataUrl = dataUrl;
     this.satelliteOpacity = Math.max(0, Math.min(1, opacity));
-    this.satelliteEnabled = Boolean(dataUrl);
+    this.satelliteEnabled = Boolean(dataUrl) && this.satelliteOpacity > 0.005;
 
     if (dataUrl) {
       const tex = new Texture(
@@ -3275,11 +3329,41 @@ export class TerrainGrid {
     }
   }
 
+  public createFlatTerrain(elevation = 2.0, clearFeatures = true, clearSatellite = true) {
+    this.courseBoundaryMask = null;
+    this.baseHeights.fill(elevation);
+    this.setPristineNaturalHeights(this.baseHeights);
+    this.heights.fill(elevation);
+    this.surfaceTypes.fill(SurfaceType.ROUGH);
+    this.isBaseCourseDirty = true;
+    this.dragStaticFeatureIdx = -1;
+
+    if (clearFeatures) {
+      this.stampedFeatures = [];
+      this.hasAnyTracedSdf = false;
+      if (this.tracedSdfData) {
+        this.tracedSdfData.fill(255);
+        this.tracedSdfTex?.update(this.tracedSdfData);
+      }
+      if (this.groundShaderPlugin) {
+        this.groundShaderPlugin.tracedCount = 0;
+      }
+    }
+    if (clearSatellite) {
+      this.setSatelliteOverlayTexture(null, 0.0);
+    }
+
+    this.syncPluginLayerState();
+    this.redrawSplatTexture();
+    this.rebuildMesh(false);
+  }
+
   public loadMapNGHeightfield(
     newBaseHeights: Float32Array,
     satelliteDataUrl?: string | null,
     satelliteOpacity = 0.72,
-    clearFeatures = false
+    clearFeatures = false,
+    courseBoundaryMask?: Uint8Array | null
   ) {
     if (newBaseHeights.length !== this.baseHeights.length) {
       throw new Error(
@@ -3290,10 +3374,22 @@ export class TerrainGrid {
     this.setPristineNaturalHeights(newBaseHeights);
     this.heights.set(newBaseHeights);
     this.surfaceTypes.fill(SurfaceType.ROUGH);
+    this.courseBoundaryMask =
+      courseBoundaryMask && courseBoundaryMask.length === this.width * this.length
+        ? new Uint8Array(courseBoundaryMask)
+        : null;
     this.isBaseCourseDirty = true;
 
     if (clearFeatures) {
       this.stampedFeatures = [];
+      this.hasAnyTracedSdf = false;
+      if (this.tracedSdfData) {
+        this.tracedSdfData.fill(255);
+        this.tracedSdfTex?.update(this.tracedSdfData);
+      }
+      if (this.groundShaderPlugin) {
+        this.groundShaderPlugin.tracedCount = 0;
+      }
     } else {
       for (const f of this.stampedFeatures) {
         f.baseElevation = this.getBaseElevation(f.centerX, f.centerZ);
@@ -3303,6 +3399,7 @@ export class TerrainGrid {
     if (satelliteDataUrl !== undefined) {
       this.setSatelliteOverlayTexture(satelliteDataUrl, satelliteOpacity);
     }
+    this.syncPluginLayerState();
     this.redrawSplatTexture();
     this.rebuildMesh(false);
   }
@@ -4053,7 +4150,7 @@ export class TerrainGrid {
         collarWidth: 1.2,
         customTextureUrls: {
           color: '/textures/pbr_grass/grass_pbr_diff_1k.jpg',
-          colorName: 'first_cut_diff_2k.jpg',
+          colorName: 'grass_pbr_diff_1k.jpg',
           roughness: '/textures/pbr_grass/grass_pbr_rough_512.jpg',
           roughnessName: 'grass_pbr_rough_512.jpg',
           normal: '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
@@ -4081,11 +4178,11 @@ export class TerrainGrid {
         collarWidth: 0.72,
         customTextureUrls: {
           color: '/textures/pbr_rough/brown_mud_leaves_diff_512.jpg',
-          colorName: 'brown_mud_leaves_diff_2k.jpg',
+          colorName: 'brown_mud_leaves_diff_512.jpg',
           roughness: '/textures/pbr_rough/brown_mud_leaves_rough_512.jpg',
-          roughnessName: 'brown_mud_leaves_rough_2k.png',
+          roughnessName: 'brown_mud_leaves_rough_512.jpg',
           normal: '/textures/pbr_rough/brown_mud_leaves_nor_512.jpg',
-          normalName: 'brown_mud_leaves_nor_2k.png'
+          normalName: 'brown_mud_leaves_nor_512.jpg'
         }
       };
     }
@@ -4221,11 +4318,11 @@ export class TerrainGrid {
           collarWidth: 2.15,
           customTextureUrls: {
             color: '/textures/pbr_rough/brown_mud_leaves_diff_512.jpg',
-            colorName: 'pond_bed_diff_2k.jpg',
+            colorName: 'brown_mud_leaves_diff_512.jpg',
             roughness: '/textures/pbr_rough/brown_mud_leaves_rough_512.jpg',
-            roughnessName: 'pond_bed_rough_2k.png',
+            roughnessName: 'brown_mud_leaves_rough_512.jpg',
             normal: '/textures/pbr_rough/brown_mud_leaves_nor_512.jpg',
-            normalName: 'pond_bed_nor_2k.png'
+            normalName: 'brown_mud_leaves_nor_512.jpg'
           }
         };
       default:
@@ -4280,6 +4377,11 @@ export class TerrainGrid {
       }
       if (feat.customTextureUrls && !feat.materialSettings.customTextureUrls) {
         feat.materialSettings.customTextureUrls = { ...feat.customTextureUrls };
+      }
+      if (feat.materialSettings.customTextureUrls) {
+        feat.materialSettings.customTextureUrls.color = TerrainGrid.sanitizeTextureUrl(feat.materialSettings.customTextureUrls.color, 'color');
+        feat.materialSettings.customTextureUrls.roughness = TerrainGrid.sanitizeTextureUrl(feat.materialSettings.customTextureUrls.roughness, 'roughness');
+        feat.materialSettings.customTextureUrls.normal = TerrainGrid.sanitizeTextureUrl(feat.materialSettings.customTextureUrls.normal, 'normal');
       }
       feat.subMaterials.surface = feat.materialSettings;
       return feat.materialSettings;
@@ -5388,12 +5490,15 @@ export class TerrainGrid {
       enableBaseColorTex: this.groundEnableBaseColorTex,
       enableRoughnessTex: this.groundEnableRoughnessTex,
       enableNormalTex: this.groundEnableNormalTex,
-      colorMapUrl: this.groundCustomTextureUrls.color || '/textures/pbr_grass/grass_pbr_diff_1k.jpg',
+      colorMapUrl: TerrainGrid.sanitizeTextureUrl(this.groundCustomTextureUrls.color, 'color') || '/textures/pbr_grass/grass_pbr_diff_1k.jpg',
       colorMapName: this.groundCustomTextureUrls.colorName || 'grass_pbr_diff_1k.jpg',
-      roughnessMapUrl: this.groundCustomTextureUrls.roughness || '/textures/pbr_grass/grass_pbr_rough_512.jpg',
+      roughnessMapUrl: TerrainGrid.sanitizeTextureUrl(this.groundCustomTextureUrls.roughness, 'roughness') || '/textures/pbr_grass/grass_pbr_rough_512.jpg',
       roughnessMapName: this.groundCustomTextureUrls.roughnessName || 'grass_pbr_rough_512.jpg',
-      normalMapUrl: this.groundCustomTextureUrls.normal || '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
-      normalMapName: this.groundCustomTextureUrls.normalName || 'grass_pbr_nor_1k.jpg'
+      normalMapUrl: TerrainGrid.sanitizeTextureUrl(this.groundCustomTextureUrls.normal, 'normal') || '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
+      normalMapName: this.groundCustomTextureUrls.normalName || 'grass_pbr_nor_1k.jpg',
+      satelliteMapUrl: this.satellitePreviewDataUrl || undefined,
+      satelliteOpacity: this.satelliteOpacity,
+      satelliteEnabled: this.satelliteEnabled
     };
   }
 
@@ -5433,10 +5538,51 @@ export class TerrainGrid {
         this.surfaceTypes.set(state.surfaceTypes);
       }
       if (Array.isArray(state.stampedFeatures)) {
-        this.stampedFeatures = state.stampedFeatures.map((f: any) => ({ ...f }));
+        const sanitizeUrlObj = (u?: FeatureTextureUrls) => {
+          if (!u) return u;
+          return {
+            ...u,
+            color: TerrainGrid.sanitizeTextureUrl(u.color, 'color'),
+            roughness: TerrainGrid.sanitizeTextureUrl(u.roughness, 'roughness'),
+            normal: TerrainGrid.sanitizeTextureUrl(u.normal, 'normal')
+          };
+        };
+        this.stampedFeatures = state.stampedFeatures.map((f: any) => {
+          const copy = { ...f };
+          if (copy.customTextureUrls) copy.customTextureUrls = sanitizeUrlObj(copy.customTextureUrls);
+          if (copy.materialSettings?.customTextureUrls) {
+            copy.materialSettings = {
+              ...copy.materialSettings,
+              customTextureUrls: sanitizeUrlObj(copy.materialSettings.customTextureUrls)
+            };
+          }
+          if (copy.subMaterials) {
+            const subCopy: any = { ...copy.subMaterials };
+            for (const key of Object.keys(subCopy)) {
+              if (subCopy[key]?.customTextureUrls) {
+                subCopy[key] = {
+                  ...subCopy[key],
+                  customTextureUrls: sanitizeUrlObj(subCopy[key].customTextureUrls)
+                };
+              }
+            }
+            copy.subMaterials = subCopy;
+          }
+          return copy;
+        });
       }
       if (state.groundSettings) {
-        this.setGroundUvSettings(state.groundSettings);
+        const gs = state.groundSettings;
+        if (gs.colorMapUrl) this.groundCustomTextureUrls.color = TerrainGrid.sanitizeTextureUrl(gs.colorMapUrl, 'color');
+        if (gs.colorMapName) this.groundCustomTextureUrls.colorName = gs.colorMapName;
+        if (gs.roughnessMapUrl) this.groundCustomTextureUrls.roughness = TerrainGrid.sanitizeTextureUrl(gs.roughnessMapUrl, 'roughness');
+        if (gs.roughnessMapName) this.groundCustomTextureUrls.roughnessName = gs.roughnessMapName;
+        if (gs.normalMapUrl) this.groundCustomTextureUrls.normal = TerrainGrid.sanitizeTextureUrl(gs.normalMapUrl, 'normal');
+        if (gs.normalMapName) this.groundCustomTextureUrls.normalName = gs.normalMapName;
+        if (gs.satelliteMapUrl) {
+          this.setSatelliteOverlayTexture(gs.satelliteMapUrl, gs.satelliteOpacity ?? 0.72);
+        }
+        this.setGroundUvSettings(gs);
       }
       if (typeof state.lastEditedSandFeatureIdx === 'number') {
         this.lastEditedSandFeatureIdx = state.lastEditedSandFeatureIdx;
@@ -5449,6 +5595,7 @@ export class TerrainGrid {
       }
       this.isBaseCourseDirty = true;
       this.dragStaticFeatureIdx = -1;
+      this.courseBoundaryMask = null;
       this.syncPluginLayerState();
       this.redrawSplatTexture();
       this.rebuildMesh();
@@ -6391,6 +6538,24 @@ export class TerrainGrid {
     const cols = this.cols;
     const rows = this.rows;
 
+    // Optional course footprint trim mask: keep course interior + 6m halo around stamped/traced features
+    let effectiveMask: Uint8Array | null = null;
+    if (this.courseBoundaryMask && this.courseBoundaryMask.length === this.width * this.length) {
+      effectiveMask = new Uint8Array(this.courseBoundaryMask);
+      for (const feat of this.stampedFeatures) {
+        const minX = Math.max(0, Math.floor(feat.centerX - feat.width * 0.5 - 6));
+        const maxX = Math.min(this.width - 1, Math.ceil(feat.centerX + feat.width * 0.5 + 6));
+        const minZ = Math.max(0, Math.floor(feat.centerZ - feat.length * 0.5 - 6));
+        const maxZ = Math.min(this.length - 1, Math.ceil(feat.centerZ + feat.length * 0.5 + 6));
+        for (let z = minZ; z <= maxZ; z++) {
+          const rowOff = z * this.width;
+          for (let x = minX; x <= maxX; x++) {
+            effectiveMask[rowOff + x] = 1;
+          }
+        }
+      }
+    }
+
     // 1. Update integer grid heights from continuous analytical elevation
     for (let z = 0; z < rows; z++) {
       for (let x = 0; x < cols; x++) {
@@ -6406,6 +6571,7 @@ export class TerrainGrid {
       for (let cz = 0; cz < this.length; cz++) {
         const midZ = cz + 0.5;
         for (let cx = 0; cx < this.width; cx++) {
+          if (effectiveMask && effectiveMask[cz * this.width + cx] === 0) continue;
           const midX = cx + 0.5;
           let isSub = false;
 
@@ -6513,6 +6679,15 @@ export class TerrainGrid {
       for (let bx = 0; bx < this.blockCols; bx++) {
         const x0 = bx * 2;
         if (
+          effectiveMask &&
+          (effectiveMask[z0 * this.width + x0] === 0 ||
+            effectiveMask[z0 * this.width + (x0 + 1)] === 0 ||
+            effectiveMask[(z0 + 1) * this.width + x0] === 0 ||
+            effectiveMask[(z0 + 1) * this.width + (x0 + 1)] === 0)
+        ) {
+          continue;
+        }
+        if (
           this.subdividedCells[z0 * this.width + x0] === 1 ||
           this.subdividedCells[z0 * this.width + (x0 + 1)] === 1 ||
           this.subdividedCells[(z0 + 1) * this.width + x0] === 1 ||
@@ -6555,6 +6730,7 @@ export class TerrainGrid {
     for (let cz = 0; cz < this.length; cz++) {
       const bz = cz >> 1;
       for (let cx = 0; cx < this.width; cx++) {
+        if (effectiveMask && effectiveMask[cz * this.width + cx] === 0) continue;
         const bx = cx >> 1;
         if (bx < this.blockCols && bz < this.blockRows && this.coarseBlocks[bz * this.blockCols + bx] === 1) {
           continue;
@@ -6685,6 +6861,7 @@ export class TerrainGrid {
     for (let cz = 0; cz < this.length; cz++) {
       const bz = cz >> 1;
       for (let cx = 0; cx < this.width; cx++) {
+        if (effectiveMask && effectiveMask[cz * this.width + cx] === 0) continue;
         const bx = cx >> 1;
         if (bx < this.blockCols && bz < this.blockRows && this.coarseBlocks[bz * this.blockCols + bx] === 1) {
           continue;

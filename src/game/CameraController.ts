@@ -23,6 +23,11 @@ export class CameraController {
   private lockedPlayRadius: number = 5.4;
   private playLowerBeta: number = 0.30;
   private playUpperBeta: number = 1.48;
+  private designerMinX: number = -40;
+  private designerMaxX: number = 260;
+  private designerMinZ: number = -40;
+  private designerMaxZ: number = 500;
+  private designerMaxRadius: number = 360;
 
   constructor(scene: Scene, canvas: HTMLCanvasElement) {
     this.scene = scene;
@@ -97,10 +102,10 @@ export class CameraController {
       const moveZ = dx * rightZ * panScale;
       const moveY = -dy * panScale;
 
-      this.camera.target.x = Math.max(-40, Math.min(260, this.camera.target.x + moveX));
+      this.camera.target.x = Math.max(this.designerMinX, Math.min(this.designerMaxX, this.camera.target.x + moveX));
       // Unrestricted downward panning (target can go down into hollows/bunkers)
       this.camera.target.y = Math.max(-50, Math.min(250, this.camera.target.y + moveY));
-      this.camera.target.z = Math.max(-40, Math.min(500, this.camera.target.z + moveZ));
+      this.camera.target.z = Math.max(this.designerMinZ, Math.min(this.designerMaxZ, this.camera.target.z + moveZ));
     });
 
     window.addEventListener('pointerup', (e) => {
@@ -128,7 +133,7 @@ export class CameraController {
     this.camera.lowerBetaLimit = 0.05;
     this.camera.upperBetaLimit = Math.PI / 1.76; // Allows tilting upward to view treetops, sky, and horizon
     this.camera.lowerRadiusLimit = 1.2;
-    this.camera.upperRadiusLimit = 360;
+    this.camera.upperRadiusLimit = this.designerMaxRadius;
     this.camera.wheelDeltaPercentage = 0.05;
     this.camera.wheelPrecision = 15;
     this.camera.inertia = 0.65;
@@ -145,7 +150,7 @@ export class CameraController {
       this.camera.lowerBetaLimit = 0.05;
       this.camera.upperBetaLimit = Math.PI / 1.76;
       this.camera.lowerRadiusLimit = 1.2;
-      this.camera.upperRadiusLimit = 360;
+      this.camera.upperRadiusLimit = this.designerMaxRadius;
       this.camera.wheelDeltaPercentage = 0.05;
       this.camera.wheelPrecision = 15;
       return;
@@ -319,8 +324,8 @@ export class CameraController {
 
       if (moveX !== 0 || moveZ !== 0) {
         const len = Math.sqrt(moveX * moveX + moveZ * moveZ) || 1;
-        this.camera.target.x = Math.max(-20, Math.min(240, this.camera.target.x + (moveX / len) * moveSpeed));
-        this.camera.target.z = Math.max(-20, Math.min(480, this.camera.target.z + (moveZ / len) * moveSpeed));
+        this.camera.target.x = Math.max(this.designerMinX, Math.min(this.designerMaxX, this.camera.target.x + (moveX / len) * moveSpeed));
+        this.camera.target.z = Math.max(this.designerMinZ, Math.min(this.designerMaxZ, this.camera.target.z + (moveZ / len) * moveSpeed));
         const targetGround = getWorldElevation(this.camera.target.x, this.camera.target.z);
         this.camera.target.y = Math.max(
           targetGround + 0.35,
@@ -428,6 +433,32 @@ export class CameraController {
     } else {
       this.camera.radius = 12;
     }
+  }
+
+  public setDesignerWorldBounds(
+    minX: number,
+    maxX: number,
+    minZ: number,
+    maxZ: number,
+    maxRadius: number
+  ) {
+    this.designerMinX = minX;
+    this.designerMaxX = maxX;
+    this.designerMinZ = minZ;
+    this.designerMaxZ = maxZ;
+    this.designerMaxRadius = Math.max(360, maxRadius);
+    this.camera.maxZ = Math.max(2400, this.designerMaxRadius * 2.6);
+    if (this.mode === 'designer') {
+      this.applyCameraConstraints();
+    }
+  }
+
+  public setCourseOverview3D(centerX: number, centerZ: number, spanMeters: number) {
+    this.camera.target.set(centerX, 6, centerZ);
+    this.camera.alpha = -Math.PI / 2;
+    this.camera.beta = 0.84; // ~48 deg isometric 3D overview matching MapNG preview
+    const desiredRadius = Math.max(260, Math.min(this.designerMaxRadius, spanMeters * 0.62));
+    this.camera.radius = desiredRadius;
   }
 
   public setTopDownView(centerX: number, centerZ: number) {

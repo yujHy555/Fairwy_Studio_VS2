@@ -24,6 +24,101 @@ export class OverheadHoleLayout {
   private isMinimized: boolean = false;
   private animFrameId: number | null = null;
   private pulsePhase: number = 0;
+  private viewMode: 'graphic' | 'radar' = 'graphic';
+  private showDistanceGraphic: boolean = false;
+  private modeControlsBound: boolean = false;
+  private onOpenCourseGuide?: () => void;
+
+  public setOnOpenCourseGuide(cb: () => void) {
+    this.onOpenCourseGuide = cb;
+  }
+
+  public setViewMode(mode: 'graphic' | 'radar') {
+    this.viewMode = mode;
+    if (this.lastData) {
+      this.syncOverheadViewUI(this.lastData.hole);
+    }
+  }
+
+  public toggleDistanceGraphic(force?: boolean) {
+    this.showDistanceGraphic = force !== undefined ? force : !this.showDistanceGraphic;
+    if (this.showDistanceGraphic) {
+      this.viewMode = 'graphic';
+    }
+    if (this.lastData) {
+      this.syncOverheadViewUI(this.lastData.hole);
+    }
+  }
+
+  private ensureModeControlsBound() {
+    if (this.modeControlsBound) return;
+    const btnGraphic = document.getElementById('btn-overhead-mode-graphic');
+    const btnRadar = document.getElementById('btn-overhead-mode-radar');
+    const btnDist = document.getElementById('btn-overhead-dist-toggle');
+    const btnExpand = document.getElementById('btn-overhead-expand-guide');
+    if (!btnGraphic && !btnRadar) return;
+
+    this.modeControlsBound = true;
+    btnGraphic?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setViewMode('graphic');
+    });
+    btnRadar?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setViewMode('radar');
+    });
+    btnDist?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDistanceGraphic();
+    });
+    btnExpand?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onOpenCourseGuide?.();
+    });
+  }
+
+  private syncOverheadViewUI(hole: GolfHole) {
+    this.ensureModeControlsBound();
+
+    const hasGraphic = Boolean(hole.overheadImageUrl);
+    const hasDist = Boolean(hole.distanceGuideImageUrl);
+    const effectiveMode: 'graphic' | 'radar' = hasGraphic ? this.viewMode : 'radar';
+
+    const graphicWrap = document.getElementById('overhead-graphic-wrap') as HTMLElement | null;
+    const imgEl = document.getElementById('overhead-hole-img') as HTMLImageElement | null;
+    const radarCanvas = document.getElementById('overhead-hole-canvas') as HTMLCanvasElement | null;
+    const btnGraphic = document.getElementById('btn-overhead-mode-graphic') as HTMLButtonElement | null;
+    const btnRadar = document.getElementById('btn-overhead-mode-radar') as HTMLButtonElement | null;
+    const btnDist = document.getElementById('btn-overhead-dist-toggle') as HTMLButtonElement | null;
+
+    if (btnGraphic) {
+      btnGraphic.disabled = !hasGraphic;
+      btnGraphic.style.display = hasGraphic ? 'inline-flex' : 'none';
+      btnGraphic.classList.toggle('active', effectiveMode === 'graphic');
+    }
+    if (btnRadar) {
+      btnRadar.classList.toggle('active', effectiveMode === 'radar');
+    }
+    if (btnDist) {
+      btnDist.disabled = !hasDist;
+      btnDist.style.display = hasDist && effectiveMode === 'graphic' ? 'inline-flex' : 'none';
+      btnDist.classList.toggle('active', this.showDistanceGraphic);
+    }
+
+    if (effectiveMode === 'graphic' && hasGraphic && graphicWrap && imgEl) {
+      const targetSrc = this.showDistanceGraphic && hole.distanceGuideImageUrl
+        ? hole.distanceGuideImageUrl
+        : (hole.overheadImageUrl || '');
+      if (targetSrc && imgEl.getAttribute('src') !== targetSrc) {
+        imgEl.src = targetSrc;
+      }
+      graphicWrap.style.display = 'flex';
+      if (radarCanvas) radarCanvas.style.display = 'none';
+    } else {
+      if (graphicWrap) graphicWrap.style.display = 'none';
+      if (radarCanvas) radarCanvas.style.display = 'block';
+    }
+  }
 
   private lastData: OverheadLayoutData | null = null;
   private onAimToPointCallback?: (worldX: number, worldZ: number) => void;
@@ -97,16 +192,18 @@ export class OverheadHoleLayout {
 
   public update(data: OverheadLayoutData) {
     this.lastData = data;
+    this.syncOverheadViewUI(data.hole);
 
     // Update Header labels
     const holeTitle = document.getElementById('overhead-hole-name');
     if (holeTitle) {
-      holeTitle.innerText = `HOLE ${data.hole.number} • PAR ${data.hole.par}`;
+      const label = data.hole.isDemo ? 'DEMO HOLE' : `HOLE ${data.hole.number}`;
+      holeTitle.innerText = `${label} • PAR ${data.hole.par}`;
     }
 
     const pillHoleTitle = document.getElementById('overhead-pill-text');
     if (pillHoleTitle) {
-      pillHoleTitle.innerText = `H${data.hole.number} PAR ${data.hole.par}`;
+      pillHoleTitle.innerText = data.hole.isDemo ? `DEMO PAR ${data.hole.par}` : `H${data.hole.number} PAR ${data.hole.par}`;
     }
 
     // Distance to pin

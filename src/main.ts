@@ -59,9 +59,13 @@ import { FeatureTracer } from './terrain/FeatureTracer';
 import {
   LoadedMapNGSource,
   extractHoleCrop,
-  buildMacroSurroundMesh
+  extractSatelliteDataUrls,
+  detectGolfCourseFootprint,
+  buildMacroSurroundMesh,
+  updateMacroSurroundMix
 } from './terrain/MapNGImporter';
 import { PolygonPoint } from './terrain/PolygonMath';
+import { KyalamiHoleGuide } from './data/KyalamiCourseData';
 import { soundFx } from './core/Audio';
 import { getDeviceProfile } from './core/DeviceProfile';
 
@@ -122,9 +126,9 @@ class HdriUvScalePlugin extends MaterialPluginBase {
               vec3 hDir = normalize(reflectionVector);
               float phi = atan(hDir.z, hDir.x);
               float elev = asin(clamp(hDir.y, -0.9999, 0.9999));
-              float elevScaled = clamp(elev * max(0.1, uHdriUvParams.y) - uHdriUvParams.z * 0.78, -1.56, 1.56);
+              float elevScaled = clamp(elev * max(0.05, uHdriUvParams.y) - uHdriUvParams.z * 0.78, -1.56, 1.56);
               float cosEl = cos(elevScaled);
-              float phiA = phi * max(0.1, uHdriUvParams.x);
+              float phiA = phi * max(0.05, uHdriUvParams.x);
               reflectionCoords = vec3(cosEl * cos(phiA), sin(elevScaled), cosEl * sin(phiA));
             } else {
               reflectionCoords = reflectionVector;
@@ -139,8 +143,8 @@ class HdriUvScalePlugin extends MaterialPluginBase {
               vec3 hDir = normalize(reflectionCoords);
               float phi = atan(hDir.z, hDir.x);
               float elev = asin(clamp(hDir.y, -0.9999, 0.9999));
-              float sU = max(0.1, uHdriUvParams.x);
-              float sV = max(0.1, uHdriUvParams.y);
+              float sU = max(0.05, uHdriUvParams.x);
+              float sV = max(0.05, uHdriUvParams.y);
               float elevScaled = clamp(elev * sV - uHdriUvParams.z * 0.78, -1.56, 1.56);
               float cosEl = cos(elevScaled);
               float sinEl = sin(elevScaled);
@@ -188,6 +192,18 @@ class FairwayStudioApp {
   private brushVisualizer!: DesignerBrushVisualizer;
   private featureTracer!: FeatureTracer;
   private macroSurroundMesh: Mesh | null = null;
+  private lastMapNGSource: LoadedMapNGSource | null = null;
+  private lastMapNGCropOpts: {
+    cropCenterX: number;
+    cropCenterZ: number;
+    rotationDeg: number;
+    elevationScale: number;
+    isolateCourseOnly: boolean;
+  } | null = null;
+  private lastMapNGCourseCenter = { x: 110, z: 230 };
+  private lastMapNGCourseSpan = 460;
+  private lastSatelliteFileName = '';
+  private playFreezeTimerId: number | null = null;
   private wasCameraDetachedForTrace = false;
   private lastSavedSatelliteOpacity = 0.72;
   private cameraCtrl!: CameraController;
@@ -279,6 +295,9 @@ class FairwayStudioApp {
     this.cameraCtrl = new CameraController(this.scene, this.canvas);
     this.scene.activeCamera = this.cameraCtrl.camera;
 
+    // 1b. Create SunLight & CascadedShadowGenerator synchronously BEFORE any mesh/tree shaders compile
+    this.setupSunAndShadowsSync();
+
     // 2. Construct terrain & scenery managers early so GPU textures start loading in parallel
     this.terrain = new TerrainGrid(this.scene);
     this.terrain.buildMesh(true); // Defer empty initial rebuild until course JSON arrives
@@ -287,7 +306,7 @@ class FairwayStudioApp {
     }
     this.scenery = new SceneryFactory(this.scene);
 
-    // 3. Parallelized Boot: HDRI Sky & Sun + Havok WASM + PBR Rough Swatch + 3D Models + /default_hole.json
+    // 3. Parallelized Boot: HDRI Sky Dome + Havok WASM + PBR Rough Swatch + 3D Models + /default_hole.json
     const defaultHolePromise = (typeof fetch !== 'undefined')
       ? fetch(`/default_hole.json?t=${Date.now()}`)
           .then(r => (r.ok ? r.text() : null))
@@ -296,7 +315,7 @@ class FairwayStudioApp {
 
     const [preloadedHoleJson] = await Promise.all([
       defaultHolePromise,
-      this.setupLighting(),
+      this.setupHdriSkybox(),
       this.havok.initialize(),
       this.terrain.initHighResPhotoPatterns(),
       this.scenery.loadTreeModels(true) // Defer 26MB Cliff_01.glb until needed
@@ -309,6 +328,7 @@ class FairwayStudioApp {
     this.courseManager.onEnvironmentSettingsLoaded = (env) => {
       const urlChanged = !!(env.hdriUrl && env.hdriUrl !== this.currentEnvSettings.hdriUrl);
       this.setHdriEnvironment(env, urlChanged);
+      this.refreshShadowsAndMaterials(true);
     };
     await this.courseManager.initWithPreloadedCourse(preloadedHoleJson);
 
@@ -392,8 +412,9 @@ class FairwayStudioApp {
     this.selectionHighlightLayer.outerGlow = true;
     this.setupGizmoManager();
 
-    // Register all course scenery & golf ball to cast real lighting shadows
+    // Register all course scenery & golf ball to cast real lighting shadows immediately on boot
     this.registerSceneryShadows();
+    this.refreshShadowsAndMaterials(true);
 
     // Place ball flush on Hole 1 Tee
     this.placeBallAtActiveTee();
@@ -418,10 +439,17 @@ class FairwayStudioApp {
 
     this.updatePreloader(100, 'Teeing Off...');
 
-    // 12. Start Render Loop
+    // 12. Start Render Loop (pauses idle 3D render when Main Menu covers screen after shader warmup)
     let framesRendered = 0;
+    let wasMenuPaused = false;
     this.engine.runRenderLoop(() => {
-      const dt = this.engine.getDeltaTime() / 1000;
+      if (framesRendered >= 4 && this.ui?.isMainMenuOpen()) {
+        wasMenuPaused = true;
+        return;
+      }
+      const rawDt = this.engine.getDeltaTime() / 1000;
+      const dt = wasMenuPaused ? 0.016 : Math.min(0.05, rawDt);
+      wasMenuPaused = false;
       this.update(dt);
       this.scene.render();
       framesRendered++;
@@ -460,15 +488,57 @@ class FairwayStudioApp {
   }
 
   private dismissPreloader() {
-    this.freezeStaticWorldMatrices(true);
     const preloader = document.getElementById('game-preloader');
     if (preloader) {
       preloader.classList.add('fade-out');
     }
+  }
+
+  private ensureHdriPreloading() {
     if (!this.hdriPreloadStarted) {
       this.hdriPreloadStarted = true;
       this.preloadHdriPresets();
     }
+  }
+
+  private schedulePlayWorldFreeze() {
+    if (this.playFreezeTimerId !== null) {
+      cancelAnimationFrame(this.playFreezeTimerId);
+      this.playFreezeTimerId = null;
+    }
+    this.playFreezeTimerId = requestAnimationFrame(() => {
+      this.playFreezeTimerId = requestAnimationFrame(() => {
+        this.playFreezeTimerId = null;
+        if (this.activeMode === 'play' && !this.ui?.isMainMenuOpen()) {
+          this.refreshShadowsAndMaterials(false);
+          this.freezeStaticWorldMatrices(true);
+        }
+      });
+    });
+  }
+
+  private refreshShadowsAndMaterials(forceAllDirty = true) {
+    const prevBlock = this.scene.blockMaterialDirtyMechanism;
+    this.scene.blockMaterialDirtyMechanism = false;
+    const shadowsShouldBeOn = this.activeMode === 'play' || this.currentShadingMode === 'rendered';
+    this.scene.shadowsEnabled = shadowsShouldBeOn;
+
+    if (this.terrain?.terrainMesh && !this.terrain.terrainMesh.isDisposed()) {
+      this.terrain.terrainMesh.receiveShadows = true;
+    }
+    if (this.macroSurroundMesh && !this.macroSurroundMesh.isDisposed()) {
+      this.macroSurroundMesh.receiveShadows = true;
+    }
+    this.registerSceneryShadows();
+    if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+      this.shadowGenerator.splitFrustum();
+    }
+    this.scene.markAllMaterialsAsDirty(
+      forceAllDirty
+        ? Material.AllDirtyFlag
+        : (Material.LightDirtyFlag | Material.TextureDirtyFlag | Material.MiscDirtyFlag)
+    );
+    this.scene.blockMaterialDirtyMechanism = prevBlock;
   }
 
   private freezeStaticWorldMatrices(freeze: boolean = true) {
@@ -537,15 +607,91 @@ class FairwayStudioApp {
     }
   }
 
-  private async setupLighting(): Promise<void> {
+  private setupSunAndShadowsSync(): void {
     const savedEnv = this.courseManager?.getEnvironmentSettings();
     if (savedEnv) {
-      this.currentEnvSettings = { ...savedEnv };
+      this.currentEnvSettings = { syncSunWithHdri: true, ...savedEnv };
     } else {
       this.currentEnvSettings = presetToEnvironmentSettings(DEFAULT_HDRI_PRESET);
     }
 
-    // 1. 2K HDRI Dome Environment Lighting & 360 Sky
+    // 1. Natural Ambient Sky & Turf Bounce Light
+    if (!this.scene.getLightByName('hemiLight')) {
+      const hemiLight = new HemisphericLight('hemiLight', new Vector3(0, 1, 0), this.scene);
+      hemiLight.intensity = 0.44;
+      hemiLight.diffuse = new Color3(0.92, 0.96, 1.0);
+      hemiLight.groundColor = new Color3(0.36, 0.42, 0.32);
+    }
+
+    // 2. Directional Sun Light calculated from Sun Azimuth & Elevation BEFORE mesh shaders compile
+    if (!this.sunLight) {
+      const courseCenter = new Vector3(110, 4, 210);
+      const radAz = (this.currentEnvSettings.sunAzimuth * Math.PI) / 180;
+      const radEl = (this.currentEnvSettings.sunElevation * Math.PI) / 180;
+      const dirX = Math.sin(radAz) * Math.cos(radEl);
+      const dirY = -Math.sin(radEl);
+      const dirZ = Math.cos(radAz) * Math.cos(radEl);
+      const lightDir = new Vector3(dirX, dirY, dirZ).normalize();
+
+      const sun = new DirectionalLight('sunLight', lightDir, this.scene);
+      sun.position = courseCenter.subtract(lightDir.scale(550));
+      sun.intensity = this.currentEnvSettings.sunIntensity;
+      sun.diffuse = Color3.FromHexString(this.currentEnvSettings.sunColor);
+      sun.specular = new Color3(0.40, 0.38, 0.35);
+      this.sunLight = sun;
+    }
+
+    // 3. Real Lighting-Generated AAA Soft-Edged Cascaded Shadows bound from frame 0
+    if (!this.shadowGenerator && this.sunLight) {
+      try {
+        const profile = getDeviceProfile();
+        if (CascadedShadowGenerator.IsSupported) {
+          const csm = new CascadedShadowGenerator(profile.shadowMapSize, this.sunLight);
+          csm.numCascades = profile.shadowCascades;
+          csm.lambda = 0.80;
+          csm.shadowMaxZ = 440;
+          csm.stabilizeCascades = true;
+          csm.depthClamp = true;
+          csm.autoCalcDepthBounds = false;
+          csm.cascadeBlendPercentage = 0.05;
+          csm.frustumEdgeFalloff = 0.10;
+          csm.filteringQuality =
+            profile.shadowFilterQuality === 'medium'
+              ? CascadedShadowGenerator.QUALITY_MEDIUM
+              : CascadedShadowGenerator.QUALITY_LOW;
+          csm.penumbraDarkness = this.currentEnvSettings.shadowDarkness;
+          csm.darkness = this.currentEnvSettings.shadowDarkness;
+          csm.bias = 0.00038;
+          csm.normalBias = 0.0045;
+          csm.transparencyShadow = true;
+          csm.splitFrustum();
+          this.shadowGenerator = csm;
+        } else {
+          this.sunLight.autoCalcShadowZBounds = false;
+          this.sunLight.autoUpdateExtends = false;
+          this.sunLight.orthoLeft = -180;
+          this.sunLight.orthoRight = 180;
+          this.sunLight.orthoTop = 240;
+          this.sunLight.orthoBottom = -240;
+          this.sunLight.shadowMinZ = 10;
+          this.sunLight.shadowMaxZ = 650;
+
+          const sg = new ShadowGenerator(Math.min(2048, profile.shadowMapSize), this.sunLight);
+          sg.usePercentageCloserFiltering = true;
+          sg.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+          sg.bias = 0.00008;
+          sg.normalBias = 0.0001;
+          sg.darkness = this.currentEnvSettings.shadowDarkness;
+          sg.transparencyShadow = true;
+          this.shadowGenerator = sg;
+        }
+      } catch (e) {
+        console.warn('ShadowGenerator initialization fallback:', e);
+      }
+    }
+  }
+
+  private async setupHdriSkybox(): Promise<void> {
     const bootUrl = this.currentEnvSettings.hdriUrl;
     this.activeRequestedHdriUrl = bootUrl;
     await new Promise<void>((resolve) => {
@@ -559,8 +705,7 @@ class FairwayStudioApp {
       const timer = setTimeout(finish, 4000);
 
       try {
-        let hdrTexture: HDRCubeTexture;
-        hdrTexture = new HDRCubeTexture(
+        const hdrTexture = new HDRCubeTexture(
           bootUrl,
           this.scene,
           512,
@@ -619,76 +764,6 @@ class FairwayStudioApp {
         finish();
       }
     });
-
-    // 2. Natural Ambient Sky & Turf Bounce Light
-    const hemiLight = new HemisphericLight('hemiLight', new Vector3(0, 1, 0), this.scene);
-    hemiLight.intensity = 0.44;
-    hemiLight.diffuse = new Color3(0.92, 0.96, 1.0);
-    hemiLight.groundColor = new Color3(0.36, 0.42, 0.32);
-
-    // 3. Directional Sun Light calculated from Sun Azimuth & Elevation
-    const courseCenter = new Vector3(110, 4, 210);
-    const radAz = (this.currentEnvSettings.sunAzimuth * Math.PI) / 180;
-    const radEl = (this.currentEnvSettings.sunElevation * Math.PI) / 180;
-    const dirX = Math.sin(radAz) * Math.cos(radEl);
-    const dirY = -Math.sin(radEl);
-    const dirZ = Math.cos(radAz) * Math.cos(radEl);
-    const lightDir = new Vector3(dirX, dirY, dirZ).normalize();
-
-    const sun = new DirectionalLight('sunLight', lightDir, this.scene);
-    sun.position = courseCenter.subtract(lightDir.scale(550));
-    sun.intensity = this.currentEnvSettings.sunIntensity;
-    sun.diffuse = Color3.FromHexString(this.currentEnvSettings.sunColor);
-    sun.specular = new Color3(0.40, 0.38, 0.35);
-    this.sunLight = sun;
-
-    // 4. Real Lighting-Generated AAA Soft-Edged Cascaded Shadows
-    // 3 cascades cover close-ups (chevron, golf ball, ducks) and 440m full-hole distant trees/cliffs cleanly without flicker
-    try {
-      const profile = getDeviceProfile();
-      if (CascadedShadowGenerator.IsSupported) {
-        const csm = new CascadedShadowGenerator(profile.shadowMapSize, sun);
-        csm.numCascades = profile.shadowCascades;
-        csm.lambda = 0.80;
-        csm.shadowMaxZ = 440;
-        csm.stabilizeCascades = true;
-        csm.depthClamp = true;
-        csm.autoCalcDepthBounds = false;
-        csm.cascadeBlendPercentage = 0.05;
-        csm.frustumEdgeFalloff = 0.10;
-        csm.filteringQuality =
-          profile.shadowFilterQuality === 'medium'
-            ? CascadedShadowGenerator.QUALITY_MEDIUM
-            : CascadedShadowGenerator.QUALITY_LOW;
-        csm.penumbraDarkness = this.currentEnvSettings.shadowDarkness;
-        csm.darkness = this.currentEnvSettings.shadowDarkness;
-        csm.bias = 0.00038;
-        csm.normalBias = 0.0045;
-        csm.transparencyShadow = true;
-        csm.splitFrustum();
-        this.shadowGenerator = csm;
-      } else {
-        sun.autoCalcShadowZBounds = false;
-        sun.autoUpdateExtends = false;
-        sun.orthoLeft = -180;
-        sun.orthoRight = 180;
-        sun.orthoTop = 240;
-        sun.orthoBottom = -240;
-        sun.shadowMinZ = 10;
-        sun.shadowMaxZ = 650;
-
-        const sg = new ShadowGenerator(Math.min(2048, profile.shadowMapSize), sun);
-        sg.usePercentageCloserFiltering = true;
-        sg.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
-        sg.bias = 0.00008;
-        sg.normalBias = 0.0001;
-        sg.darkness = this.currentEnvSettings.shadowDarkness;
-        sg.transparencyShadow = true;
-        this.shadowGenerator = sg;
-      }
-    } catch (e) {
-      console.warn('ShadowGenerator initialization fallback:', e);
-    }
   }
 
   private registerSceneryShadows() {
@@ -729,6 +804,7 @@ class FairwayStudioApp {
         lower.startsWith('hero_tree_branches_') ||
         lower.startsWith('bush_branches_') ||
         lower === 'golfterrain' ||
+        lower.includes('mapngmacrosurround') ||
         lower.includes('skybox') ||
         lower.includes('drape') ||
         lower.includes('proxy') ||
@@ -845,30 +921,60 @@ class FairwayStudioApp {
     this.ui = new UIController({
       onMainMenuPlay: () => {
         this.ui.hideMainMenu();
+        this.ensureHdriPreloading();
+        this.freezeStaticWorldMatrices(false);
+        this.activeMode = 'play';
         if (this.courseManager.currentHoleIndex !== 0) {
           this.courseManager.selectHole(0);
         }
         this.ui.setMode('play');
         this.setViewportShadingMode('rendered', false);
+        this.refreshShadowsAndMaterials(true);
         this.placeBallAtActiveTee();
         this.cameraCtrl.setMode('aim');
         this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
         this.updateHUDDisplay();
-        this.freezeStaticWorldMatrices(true);
+        this.schedulePlayWorldFreeze();
       },
       onMainMenuDesigner: () => {
         this.ui.hideMainMenu();
+        this.ensureHdriPreloading();
+        if (this.playFreezeTimerId !== null) {
+          cancelAnimationFrame(this.playFreezeTimerId);
+          this.playFreezeTimerId = null;
+        }
         this.freezeStaticWorldMatrices(false);
         this.activeMode = 'designer';
         this.cameraCtrl.setMode('designer');
         this.ui.setMode('designer');
         this.setViewportShadingMode(this.currentShadingMode, true);
+        if (this.currentShadingMode === 'rendered') {
+          this.refreshShadowsAndMaterials(true);
+        }
+        this.updateDevStats();
+        this.ui.updateFeatureList(this.terrain.stampedFeatures, this.selectedFeatureIndex);
+        this.refreshOutliner();
+        this.ui.updateEnvironmentInputs(this.currentEnvSettings);
+        if (this.selectedFeatureIndex < 0 && !this.selectedMesh) {
+          this.ui.showGroundPbrInspector({
+            ...this.terrain.getGroundUvSettings(),
+            satelliteMapName: this.lastSatelliteFileName || undefined
+          });
+        }
       },
       onModeToggle: (mode) => {
+        this.ensureHdriPreloading();
         this.activeMode = mode;
         if (mode === 'designer') {
+          if (this.playFreezeTimerId !== null) {
+            cancelAnimationFrame(this.playFreezeTimerId);
+            this.playFreezeTimerId = null;
+          }
           this.freezeStaticWorldMatrices(false);
           this.setViewportShadingMode(this.currentShadingMode, true);
+          if (this.currentShadingMode === 'rendered') {
+            this.refreshShadowsAndMaterials(true);
+          }
           this.cameraCtrl.setMode('designer');
           if (this.aimSystem) this.aimSystem.setVisible(false);
           this.activeDesignerTool = 'select';
@@ -879,9 +985,13 @@ class FairwayStudioApp {
           this.refreshOutliner();
           this.ui.updateEnvironmentInputs(this.currentEnvSettings);
           if (this.selectedFeatureIndex < 0 && !this.selectedMesh) {
-            this.ui.showGroundPbrInspector(this.terrain.getGroundUvSettings());
+            this.ui.showGroundPbrInspector({
+              ...this.terrain.getGroundUvSettings(),
+              satelliteMapName: this.lastSatelliteFileName || undefined
+            });
           }
         } else {
+          this.freezeStaticWorldMatrices(false);
           this.setViewportShadingMode('rendered', false);
           this.selectCourseFeature(-1);
           this.selectMesh(null);
@@ -903,7 +1013,6 @@ class FairwayStudioApp {
             this.courseManager.snapTeeToTeeBox();
             this.courseManager.snapPinToGreen();
             this.courseManager.refreshSceneryForFeatures();
-            this.registerSceneryShadows();
           }
           if (this.courseManager && this.courseManager.currentStrokes === 0) {
             this.placeBallAtActiveTee();
@@ -921,7 +1030,8 @@ class FairwayStudioApp {
             this.aimSystem.setVisible(true);
             this.aimSystem.update(this.ball.position, this.activeClub, this.swingEngine.windSpeedMps, this.swingEngine.windHeadingDeg);
           }
-          this.freezeStaticWorldMatrices(true);
+          this.refreshShadowsAndMaterials(true);
+          this.schedulePlayWorldFreeze();
         }
       },
       onToolSelect: (tool) => {
@@ -988,6 +1098,7 @@ class FairwayStudioApp {
             hdriId: preset.id,
             hdriUrl: preset.file,
             hdriRotation: preset.rotationDeg,
+            syncSunWithHdri: true,
             hdriIntensity: preset.envIntensity,
             hdriScaleU: 1.0,
             hdriScaleV: 1.0,
@@ -1010,6 +1121,23 @@ class FairwayStudioApp {
       },
       onApplyMapNGImport: (payload) => {
         this.applyMapNGImport(payload);
+      },
+      onApplySatelliteOnly: (img, fileName) => {
+        this.applySatelliteImageOnly(img, fileName);
+      },
+      onCourseOverview3D: () => {
+        this.cameraCtrl.setCourseOverview3D(
+          this.lastMapNGCourseCenter.x,
+          this.lastMapNGCourseCenter.z,
+          this.lastMapNGCourseSpan
+        );
+        this.ui.showToast('🌍 Framed isolated golf course overview', 'info', 1800);
+      },
+      onCreateFlatHole: (opts) => {
+        this.createFlatHole(opts);
+      },
+      onSelectKyalamiHole: (hole) => {
+        this.selectKyalamiHoleIn3D(hole);
       },
       onToggleSatelliteOverlay: () => {
         this.toggleSatelliteOverlay();
@@ -1211,7 +1339,23 @@ class FairwayStudioApp {
         this.ui.showToast(`Updated ${slot.toUpperCase()} map on ${this.selectedMesh.name}`);
       },
       onGroundTextureUpload: async (slot, dataUrl, fileName) => {
+        if (slot === 'satellite') {
+          const img = await new Promise<HTMLImageElement | null>((resolve) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => resolve(null);
+            el.src = dataUrl;
+          });
+          if (img) {
+            this.applySatelliteImageOnly(img, fileName);
+          }
+          return;
+        }
         await this.terrain.setGroundTexture(slot, dataUrl, fileName);
+        this.ui.showGroundPbrInspector({
+          ...this.terrain.getGroundUvSettings(),
+          satelliteMapName: this.lastSatelliteFileName || undefined
+        });
         this.ui.showToast(`Updated Ground PBR ${slot.toUpperCase()} map`);
       },
       onObjectMaterialChange: (settings) => {
@@ -1253,11 +1397,42 @@ class FairwayStudioApp {
         }
       },
       onGroundUvChange: (settings) => {
+        if (settings.satelliteMix !== undefined) {
+          this.setSatelliteOverlayOpacity(settings.satelliteMix);
+        }
+        if (settings.enableSatelliteTex !== undefined) {
+          if (settings.enableSatelliteTex && this.terrain.satelliteOverlayTex) {
+            const nextOp = this.lastSavedSatelliteOpacity > 0.05 ? this.lastSavedSatelliteOpacity : 0.72;
+            this.setSatelliteOverlayOpacity(nextOp);
+          } else if (!settings.enableSatelliteTex) {
+            this.terrain.setSatelliteOpacity(0, false);
+            this.ui.updateSatelliteUi(false, 0);
+          }
+        }
         this.terrain.setGroundUvSettings(settings);
+        if (this.macroSurroundMesh) {
+          const gSettings = this.terrain.getGroundUvSettings();
+          updateMacroSurroundMix(
+            this.macroSurroundMesh,
+            this.terrain.satelliteEnabled ? this.terrain.satelliteOpacity : 0,
+            gSettings.baseColor
+          );
+        }
       },
       onResetGroundMaterial: () => {
         this.terrain.resetGroundMaterial();
-        this.ui.showGroundPbrInspector(this.terrain.getGroundUvSettings());
+        this.ui.showGroundPbrInspector({
+          ...this.terrain.getGroundUvSettings(),
+          satelliteMapName: this.lastSatelliteFileName || undefined
+        });
+        if (this.macroSurroundMesh) {
+          const gSettings = this.terrain.getGroundUvSettings();
+          updateMacroSurroundMix(
+            this.macroSurroundMesh,
+            this.terrain.satelliteEnabled ? this.terrain.satelliteOpacity : 0,
+            gSettings.baseColor
+          );
+        }
         this.ui.showToast('Reset Main Ground to Grass007 PBR defaults 🌱', 'info', 1800);
       },
       onSculptModeSelect: (mode) => {
@@ -2000,6 +2175,18 @@ class FairwayStudioApp {
       terrainWidth: this.terrain.width,
       terrainLength: this.terrain.length,
       strokes: this.courseManager.currentStrokes
+    });
+
+    const hole = this.courseManager.currentHole;
+    const tee = hole.teePosition;
+    const teeDx = pin.x - tee.x;
+    const teeDz = pin.z - tee.z;
+    this.ui.updateCourseGuideTelemetry({
+      activeHoleNum: hole.number,
+      isDemoHole: Boolean(hole.isDemo),
+      teeToPinMeters: Math.sqrt(teeDx * teeDx + teeDz * teeDz),
+      ballToPinMeters: distToPin,
+      elevDeltaMeters: pin.y - this.ball.position.y
     });
   }
 
@@ -3693,11 +3880,11 @@ class FairwayStudioApp {
     const finalDiffTex = diffTex || (mat as any)._origDiffuseTex;
     const finalRoughTex = roughTex;
 
-    const colorMapUrl = (mat as any)._customColorUrl || getTexUrl(finalDiffTex) || '/textures/pbr_grass/grass_pbr_diff.jpg';
+    const colorMapUrl = (mat as any)._customColorUrl || getTexUrl(finalDiffTex) || '/textures/pbr_grass/grass_pbr_diff_1k.jpg';
     const colorMapName = (mat as any)._customColorName || getTexName(finalDiffTex, 'model_diff.jpg');
-    const roughnessMapUrl = (mat as any)._customRoughUrl || getTexUrl(finalRoughTex) || '/textures/pbr_grass/grass_pbr_rough.jpg';
+    const roughnessMapUrl = (mat as any)._customRoughUrl || getTexUrl(finalRoughTex) || '/textures/pbr_grass/grass_pbr_rough_512.jpg';
     const roughnessMapName = (mat as any)._customRoughName || getTexName(finalRoughTex, 'model_rough.jpg');
-    const normalMapUrl = (mat as any)._customNormalUrl || getTexUrl(bumpTex) || '/textures/pbr_grass/grass_pbr_nor.jpg';
+    const normalMapUrl = (mat as any)._customNormalUrl || getTexUrl(bumpTex) || '/textures/pbr_grass/grass_pbr_nor_1k.jpg';
     const normalMapName = (mat as any)._customNormalName || getTexName(bumpTex, 'model_nor.jpg');
 
     return {
@@ -3984,7 +4171,7 @@ class FairwayStudioApp {
         (mat as any)._userNormalLevel = settings.normalLevel;
         const safeLevel = Math.max(0.0001, settings.normalLevel);
         if (!mat.bumpTexture) {
-          mat.bumpTexture = (mat as any)._origBumpTex || new Texture('/textures/pbr_grass/grass_pbr_nor_disp_2k.png', this.scene);
+          mat.bumpTexture = (mat as any)._origBumpTex || new Texture('/textures/pbr_grass/grass_pbr_nor_1k.jpg', this.scene);
         }
         applyUvToTex(mat.bumpTexture);
         (mat.bumpTexture as any).level = safeLevel;
@@ -4268,10 +4455,22 @@ class FairwayStudioApp {
   }
 
   public async setHdriEnvironment(settings: Partial<EnvironmentSettings>, reloadTexture: boolean = false) {
+    const prevRot = this.currentEnvSettings.hdriRotation ?? 0;
+    const prevAz = this.currentEnvSettings.sunAzimuth ?? 145;
     this.currentEnvSettings = {
       ...this.currentEnvSettings,
       ...settings
     };
+
+    if (
+      settings.hdriRotation !== undefined &&
+      settings.sunAzimuth === undefined &&
+      !reloadTexture &&
+      this.currentEnvSettings.syncSunWithHdri !== false
+    ) {
+      const delta = this.currentEnvSettings.hdriRotation - prevRot;
+      this.currentEnvSettings.sunAzimuth = ((prevAz + delta) % 360 + 360) % 360;
+    }
 
     if (this.courseManager) {
       this.courseManager.setEnvironmentSettings(this.currentEnvSettings);
@@ -4427,7 +4626,7 @@ class FairwayStudioApp {
   private applyHdriTransform() {
     const rotDeg = this.currentEnvSettings.hdriRotation || 0;
     const rotRad = (rotDeg * Math.PI) / 180;
-    const scaleU = Math.max(0.1, this.currentEnvSettings.hdriScaleU ?? 1.0);
+    const scaleU = Math.max(0.05, this.currentEnvSettings.hdriScaleU ?? 1.0);
     const scaleV = scaleU;
     const offsetU = this.currentEnvSettings.hdriOffsetU ?? 0.0;
     const offsetV = this.currentEnvSettings.hdriOffsetV ?? 0.0;
@@ -4590,17 +4789,20 @@ class FairwayStudioApp {
 
   public toggleSatelliteOverlay() {
     if (!this.terrain.satelliteOverlayTex) {
-      this.ui.showToast('Import a MapNG course with satellite texture first to toggle [T].', 'info', 2400);
+      this.ui.showToast('Import a MapNG course or upload a Satellite Ortho texture first to toggle [T].', 'info', 2400);
       return;
     }
+    const gColor = this.terrain.getGroundUvSettings().baseColor;
     if (this.terrain.satelliteEnabled && this.terrain.satelliteOpacity > 0.01) {
       this.lastSavedSatelliteOpacity = this.terrain.satelliteOpacity;
       this.terrain.setSatelliteOpacity(0.0, false);
+      updateMacroSurroundMix(this.macroSurroundMesh, 0.0, gColor);
       this.ui.updateSatelliteUi(false, 0.0);
       this.ui.showToast('🛰️ Satellite Overlay OFF [T]', 'info', 1400);
     } else {
       const nextOp = this.lastSavedSatelliteOpacity > 0.05 ? this.lastSavedSatelliteOpacity : 0.72;
       this.terrain.setSatelliteOpacity(nextOp, true);
+      updateMacroSurroundMix(this.macroSurroundMesh, nextOp, gColor);
       this.ui.updateSatelliteUi(true, nextOp);
       this.ui.showToast(`🛰️ Satellite Overlay ON (${Math.round(nextOp * 100)}%) [T]`, 'info', 1400);
     }
@@ -4613,7 +4815,150 @@ class FairwayStudioApp {
     const hasTex = Boolean(this.terrain.satelliteOverlayTex);
     const enabled = hasTex && opacity > 0.005;
     this.terrain.setSatelliteOpacity(opacity, enabled);
+    const gColor = this.terrain.getGroundUvSettings().baseColor;
+    updateMacroSurroundMix(this.macroSurroundMesh, enabled ? opacity : 0.0, gColor);
     this.ui.updateSatelliteUi(enabled, opacity);
+  }
+
+  public applySatelliteImageOnly(img: HTMLImageElement, fileName: string) {
+    this.lastSatelliteFileName = fileName;
+    let holeDataUrl: string | null = null;
+    let macroDataUrl: string | null | undefined = undefined;
+
+    if (this.lastMapNGSource && this.lastMapNGCropOpts) {
+      this.lastMapNGSource.satelliteImg = img;
+      const footprint =
+        this.lastMapNGSource.courseFootprint || detectGolfCourseFootprint(this.lastMapNGSource);
+      this.lastMapNGSource.courseFootprint = footprint;
+      const extracted = extractSatelliteDataUrls(
+        img,
+        this.lastMapNGSource.heightmap.width,
+        this.lastMapNGSource.heightmap.height,
+        this.lastMapNGSource.meta.metersPerPixel || 1.0,
+        {
+          ...this.lastMapNGCropOpts,
+          gridWidth: this.terrain.width,
+          gridLength: this.terrain.length,
+          courseFootprint: footprint
+        }
+      );
+      holeDataUrl = extracted.satelliteDataUrl;
+      macroDataUrl = extracted.macroSatelliteDataUrl;
+    } else {
+      const maxDim = Math.min(1024, Math.max(img.width, img.height, 256));
+      const scale = maxDim / Math.max(1, img.width, img.height);
+      const cw = Math.max(128, Math.round(img.width * scale));
+      const ch = Math.max(128, Math.round(img.height * scale));
+      const c = document.createElement('canvas');
+      c.width = cw;
+      c.height = ch;
+      const ctx = c.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, cw, ch);
+        holeDataUrl = c.toDataURL('image/jpeg', 0.88);
+      }
+    }
+
+    if (!holeDataUrl) {
+      this.ui.showToast('Unable to encode satellite ortho texture.', 'warning', 2400);
+      return;
+    }
+
+    const mix = Math.max(0.72, this.lastSavedSatelliteOpacity || 0.72);
+    this.lastSavedSatelliteOpacity = mix;
+    this.terrain.setSatelliteOverlayTexture(holeDataUrl, mix);
+    const gSettings = this.terrain.getGroundUvSettings();
+    updateMacroSurroundMix(this.macroSurroundMesh, mix, gSettings.baseColor, macroDataUrl);
+    this.ui.updateSatelliteUi(true, mix);
+    this.ui.showGroundPbrInspector({
+      ...this.terrain.getGroundUvSettings(),
+      satelliteMapName: fileName
+    });
+    this.ui.showToast(`🛰️ Applied Satellite Ortho: ${fileName} (${Math.round(mix * 100)}%)`, 'success', 2800);
+  }
+
+  public createFlatHole(opts: {
+    par: 3 | 4 | 5;
+    mode: 'new_course' | 'add_hole';
+    blankFlat: boolean;
+    courseName?: string;
+    kyalamiHoleNum?: number;
+  }) {
+    this.runWithTerraformingLoader(() => {
+      if (this.macroSurroundMesh) {
+        this.macroSurroundMesh.dispose();
+        this.macroSurroundMesh = null;
+      }
+      this.lastMapNGSource = null;
+      this.lastMapNGCropOpts = null;
+      this.lastMapNGCourseCenter = { x: 110, z: 230 };
+      this.lastMapNGCourseSpan = 460;
+      this.cameraCtrl.setDesignerWorldBounds(-80, 300, -80, 540, 520);
+      if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+        this.shadowGenerator.shadowMaxZ = 440;
+      }
+
+      const hole = this.courseManager.createFlatHoleTemplate(opts);
+      this.scenery.syncColliders();
+      this.ball?.setTreeColliders(this.scenery.treeColliders);
+      if (this.terrain.terrainMesh) {
+        this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+      }
+      this.greenVisualizer?.rebuildSlopeGrid();
+      this.selectCourseFeature(-1);
+      this.placeBallAtActiveTee();
+      this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
+      this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
+      this.refreshOutliner();
+      this.updateDevStats();
+      this.updateHUDDisplay();
+      this.ui.updateSatelliteUi(false, 0);
+      this.ui.showGroundPbrInspector({
+        ...this.terrain.getGroundUvSettings(),
+        satelliteMapName: undefined
+      });
+      this.refreshShadowsAndMaterials(true);
+
+      if (this.activeMode === 'designer') {
+        this.cameraCtrl.frameOnTarget(new Vector3(110, 2, 230), 210);
+      } else {
+        this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+      }
+
+      this.ui.showToast(
+        `✨ Created Flat Hole ${hole.number} (Par ${hole.par}) — Ready to sculpt & build!`,
+        'success',
+        3200
+      );
+    }, `Creating Flat Par ${opts.par} Hole Terrain...`);
+  }
+
+  public selectKyalamiHoleIn3D(holeGuide: KyalamiHoleGuide) {
+    this.courseManager.applyKyalamiHoleMetadata(holeGuide.number, true);
+
+    if (this.activeMode === 'designer' && this.lastMapNGSource) {
+      this.applyMapNGImport({
+        source: this.lastMapNGSource,
+        cropCenterX: holeGuide.mapngCropHint.cropCenterX,
+        cropCenterZ: holeGuide.mapngCropHint.cropCenterZ,
+        rotationDeg: holeGuide.mapngCropHint.rotationDeg,
+        elevationScale: this.lastMapNGCropOpts?.elevationScale ?? 1.0,
+        clearFeatures: false,
+        isolateCourseOnly: this.lastMapNGCropOpts?.isolateCourseOnly ?? true,
+        clearScenery: false,
+        kyalamiHoleNumber: holeGuide.number
+      });
+      return;
+    }
+
+    this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
+    this.ui.overheadLayout?.setViewMode('graphic');
+    this.updateHUDDisplay();
+    this.ui.showToast(
+      `⛳ Synced Kyalami Hole ${holeGuide.number} (Par ${holeGuide.par} • ${holeGuide.distances.yellow}m)`,
+      'success',
+      2800
+    );
   }
 
   public applyMapNGImport(payload: {
@@ -4623,26 +4968,49 @@ class FairwayStudioApp {
     rotationDeg: number;
     elevationScale: number;
     clearFeatures: boolean;
+    isolateCourseOnly?: boolean;
+    clearScenery?: boolean;
+    kyalamiHoleNumber?: number;
   }) {
     this.runWithTerraformingLoader(() => {
       const snap = this.captureHistorySnapshot('Import MapNG Terrain');
+      const isolateCourseOnly = payload.isolateCourseOnly !== false;
+      const footprint = isolateCourseOnly
+        ? (payload.source.courseFootprint || detectGolfCourseFootprint(payload.source))
+        : null;
+      if (footprint) {
+        payload.source.courseFootprint = footprint;
+      }
+
       const cropOpts = {
         cropCenterX: payload.cropCenterX,
         cropCenterZ: payload.cropCenterZ,
         rotationDeg: payload.rotationDeg,
         elevationScale: payload.elevationScale,
         gridWidth: this.terrain.width,
-        gridLength: this.terrain.length
+        gridLength: this.terrain.length,
+        isolateCourseOnly,
+        courseFootprint: footprint
       };
       const extracted = extractHoleCrop(payload.source, cropOpts);
-      const satOpacity = extracted.satelliteDataUrl ? 0.72 : 0.0;
+      const satOpacity = extracted.satelliteDataUrl ? 0.85 : 0.0;
       if (satOpacity > 0) this.lastSavedSatelliteOpacity = satOpacity;
+
+      if (payload.clearScenery !== false) {
+        this.courseManager.clearAllScenery();
+      }
+      if (payload.kyalamiHoleNumber) {
+        this.courseManager.applyKyalamiHoleMetadata(payload.kyalamiHoleNumber, true);
+      } else if (footprint?.sourceLabel.includes('Kyalami')) {
+        this.courseManager.courseData.courseGuideId = 'kyalami';
+      }
 
       this.terrain.loadMapNGHeightfield(
         extracted.baseHeights,
         extracted.satelliteDataUrl,
         satOpacity,
-        payload.clearFeatures
+        payload.clearFeatures,
+        extracted.holeCourseMask
       );
 
       if (this.macroSurroundMesh) {
@@ -4656,6 +5024,36 @@ class FairwayStudioApp {
         extracted.minHoleElev,
         extracted.macroSatelliteDataUrl
       );
+      this.macroSurroundMesh.receiveShadows = true;
+      updateMacroSurroundMix(
+        this.macroSurroundMesh,
+        satOpacity,
+        this.terrain.getGroundUvSettings().baseColor
+      );
+
+      this.lastMapNGSource = payload.source;
+      this.lastMapNGCropOpts = {
+        cropCenterX: payload.cropCenterX,
+        cropCenterZ: payload.cropCenterZ,
+        rotationDeg: payload.rotationDeg,
+        elevationScale: payload.elevationScale,
+        isolateCourseOnly
+      };
+      this.lastMapNGCourseCenter = { ...extracted.courseCenterWorld };
+      this.lastMapNGCourseSpan = Math.max(460, extracted.courseSpanMeters);
+
+      // Expand Designer world bounds & CSM shadow range to cover full isolated 18-hole course
+      const pad = Math.max(420, this.lastMapNGCourseSpan * 0.75);
+      this.cameraCtrl.setDesignerWorldBounds(
+        this.lastMapNGCourseCenter.x - pad,
+        this.lastMapNGCourseCenter.x + pad,
+        this.lastMapNGCourseCenter.z - pad,
+        this.lastMapNGCourseCenter.z + pad,
+        Math.max(950, this.lastMapNGCourseSpan * 1.45)
+      );
+      if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+        this.shadowGenerator.shadowMaxZ = Math.max(550, Math.min(1200, this.lastMapNGCourseSpan * 0.85));
+      }
 
       // Re-seat Tee & Pin markers accurately on imported MapNG DEM elevations
       const hole = this.courseManager.currentHole;
@@ -4676,24 +5074,41 @@ class FairwayStudioApp {
 
       this.courseManager.courseData.mapngMeta = extracted.meta;
       this.courseManager.refreshWaterMeshes();
-      this.courseManager.refreshSceneryForFeatures();
+      if (payload.clearScenery === false) {
+        this.courseManager.refreshSceneryForFeatures();
+      }
+      this.scenery.syncColliders();
+      this.ball?.setTreeColliders(this.scenery.treeColliders);
       if (this.terrain.terrainMesh) {
         this.havok.updateTerrainCollision(this.terrain.terrainMesh);
       }
       this.greenVisualizer?.rebuildSlopeGrid();
       this.selectCourseFeature(-1);
+      this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
       this.refreshOutliner();
       this.ui.updateSatelliteUi(Boolean(extracted.satelliteDataUrl), satOpacity);
-      this.cameraCtrl.setTopDownView(this.terrain.width * 0.5, this.terrain.length * 0.5);
+      this.ui.showGroundPbrInspector({
+        ...this.terrain.getGroundUvSettings(),
+        satelliteMapName: this.lastSatelliteFileName || (extracted.satelliteDataUrl ? 'mapng_satellite.jpg' : undefined)
+      });
+      this.refreshShadowsAndMaterials(true);
+      this.cameraCtrl.setCourseOverview3D(
+        this.lastMapNGCourseCenter.x,
+        this.lastMapNGCourseCenter.z,
+        this.lastMapNGCourseSpan
+      );
       this.recordHistoryStep(snap.description, snap);
       this.updateDevStats();
+      this.updateHUDDisplay();
+
+      const keptSuffix = footprint ? ` • ${Math.round(footprint.coveragePct)}% golf course isolated` : '';
       this.ui.showToast(
-        `🗺️ Loaded MapNG Terrain: ${payload.source.meta.levelName} (${extracted.minHoleElev.toFixed(1)}m–${extracted.maxHoleElev.toFixed(1)}m)`,
+        `🗺️ Loaded ${payload.source.meta.levelName} (${extracted.minHoleElev.toFixed(1)}m–${extracted.maxHoleElev.toFixed(1)}m${keptSuffix})`,
         'success',
-        3600
+        3800
       );
-    }, 'Importing MapNG 16-bit DEM & Satellite...');
+    }, 'Isolating Golf Course & Importing 16-bit MapNG Terrain...');
   }
 
   /**
@@ -4731,27 +5146,39 @@ class FairwayStudioApp {
         this.scene.clearColor = new Color4(0.24, 0.27, 0.32, 1.0);
         break;
 
-      case 'material':
+      case 'material': {
+        const prevBlock = this.scene.blockMaterialDirtyMechanism;
+        this.scene.blockMaterialDirtyMechanism = false;
         this.scene.forceWireframe = false;
         this.scene.texturesEnabled = true;
         this.scene.markAllMaterialsAsDirty(Material.TextureDirtyFlag | Material.MiscDirtyFlag);
+        this.scene.blockMaterialDirtyMechanism = prevBlock;
         this.scene.shadowsEnabled = false;
         if (this.skyboxMesh) {
           this.skyboxMesh.setEnabled(true);
         }
         this.scene.clearColor = new Color4(0, 0, 0, 1.0);
         break;
+      }
 
-      case 'rendered':
+      case 'rendered': {
+        const prevBlock = this.scene.blockMaterialDirtyMechanism;
+        this.scene.blockMaterialDirtyMechanism = false;
         this.scene.forceWireframe = false;
         this.scene.texturesEnabled = true;
-        this.scene.markAllMaterialsAsDirty(Material.TextureDirtyFlag | Material.MiscDirtyFlag);
         this.scene.shadowsEnabled = true;
         if (this.skyboxMesh) {
           this.skyboxMesh.setEnabled(true);
         }
         this.scene.clearColor = new Color4(0, 0, 0, 1.0);
+        this.registerSceneryShadows();
+        if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+          this.shadowGenerator.splitFrustum();
+        }
+        this.scene.markAllMaterialsAsDirty(Material.LightDirtyFlag | Material.TextureDirtyFlag | Material.MiscDirtyFlag);
+        this.scene.blockMaterialDirtyMechanism = prevBlock;
         break;
+      }
     }
   }
 

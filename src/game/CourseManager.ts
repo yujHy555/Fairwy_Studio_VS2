@@ -4,6 +4,7 @@ import { TerrainGrid } from '../terrain/TerrainGrid';
 import { SceneryFactory } from '../terrain/Scenery';
 import { Mesh, InstancedMesh, AbstractMesh } from '@babylonjs/core';
 import { CourseStorage } from './CourseStorage';
+import { KYALAMI_COURSE_GUIDE } from '../data/KyalamiCourseData';
 
 export class CourseManager {
   public courseData: GolfCourseData;
@@ -35,7 +36,8 @@ export class CourseManager {
         {
           number: 1,
           par: 4,
-          name: 'The Valley Dogleg',
+          name: 'Demo Hole',
+          isDemo: true,
           teePosition: { x: 95, y: 8.0, z: 42 },
           pinPosition: { x: 148, y: 1.25, z: 360 },
           waypoints: [{ x: 102, y: 2.2, z: 200 }]
@@ -831,6 +833,147 @@ export class CourseManager {
     window.location.reload();
   }
 
+  public clearAllScenery(): void {
+    for (const m of this.sceneryMeshes) {
+      if (!m || m.isDisposed()) continue;
+      try {
+        m.dispose(false, false);
+      } catch {}
+    }
+    this.sceneryMeshes = [];
+    if (this.scenery?.treeColliders) {
+      this.scenery.treeColliders.length = 0;
+    }
+  }
+
+  /**
+   * Creates a clean flat-terrain hole (or resets Demo Hole into a fresh Hole 1 course)
+   * with selected Par 3 / Par 4 / Par 5 dimensions so the architect can build from scratch.
+   */
+  public createFlatHoleTemplate(opts: {
+    par: 3 | 4 | 5;
+    mode: 'new_course' | 'add_hole';
+    blankFlat: boolean;
+    courseName?: string;
+    kyalamiHoleNum?: number;
+  }): GolfHole {
+    const kyGuide = opts.kyalamiHoleNum
+      ? KYALAMI_COURSE_GUIDE.holes.find((h) => h.number === opts.kyalamiHoleNum)
+      : undefined;
+    const effectivePar: 3 | 4 | 5 = kyGuide ? kyGuide.par : opts.par;
+
+    this.clearAllScenery();
+    this.terrain.createFlatTerrain(2.0, true, true);
+
+    let teePos = { x: 110, y: 2.0, z: 50 };
+    let pinPos = { x: 110, y: 2.0, z: 395 };
+    let waypoints: { x: number; y: number; z: number }[] = [];
+
+    if (effectivePar === 3) {
+      teePos = { x: 110, y: 2.0, z: 110 };
+      const dist = kyGuide ? Math.min(240, Math.max(115, kyGuide.distances.yellow)) : 165;
+      pinPos = { x: 110, y: 2.0, z: 110 + dist };
+    } else if (effectivePar === 4) {
+      teePos = { x: 110, y: 2.0, z: 50 };
+      const dist = kyGuide ? Math.min(395, Math.max(250, kyGuide.distances.yellow)) : 345;
+      pinPos = { x: 110, y: 2.0, z: 50 + dist };
+    } else {
+      teePos = { x: 100, y: 2.0, z: 28 };
+      pinPos = { x: 110, y: 2.0, z: 438 };
+      waypoints = [{ x: 118, y: 2.0, z: 235 }];
+    }
+
+    if (!opts.blankFlat) {
+      this.terrain.stampFeature(teePos.x, teePos.z, 14, 18, 0, SurfaceType.TEE, 0.0, 0, undefined, undefined, false);
+      this.terrain.stampFeature(pinPos.x, pinPos.z, 28, 34, 0, SurfaceType.GREEN, 0.0, 0, undefined, undefined, false);
+      this.terrain.redrawSplatTexture();
+      this.terrain.rebuildMesh(false);
+    }
+
+    const isStartingCourse = opts.mode === 'new_course' || (this.courseData.holes.length === 1 && this.courseData.holes[0]?.isDemo);
+    const nextNum = kyGuide ? kyGuide.number : isStartingCourse ? 1 : Math.min(18, this.courseData.holes.length + 1);
+
+    const newHole: GolfHole = {
+      number: nextNum,
+      par: effectivePar,
+      name: kyGuide ? `Kyalami Hole ${kyGuide.number}` : `Hole ${nextNum}`,
+      isDemo: false,
+      strokeIndex: kyGuide?.strokeIndex,
+      distances: kyGuide ? { ...kyGuide.distances } : undefined,
+      proTip: kyGuide?.proTip,
+      overheadImageUrl: kyGuide?.imageUrl,
+      distanceGuideImageUrl: kyGuide?.distanceGuideUrl,
+      courseGuideId: kyGuide ? 'kyalami' : this.courseData.courseGuideId,
+      teePosition: { ...teePos },
+      pinPosition: { ...pinPos },
+      waypoints
+    };
+
+    if (isStartingCourse) {
+      const targetName =
+        (opts.courseName && opts.courseName.trim()) ||
+        (kyGuide ? KYALAMI_COURSE_GUIDE.name : 'My Championship Course');
+      this.courseData = {
+        id: kyGuide ? 'kyalami_cc' : `course_${Date.now().toString(36)}`,
+        name: targetName,
+        author: 'Architect',
+        gridWidth: this.terrain.width,
+        gridLength: this.terrain.length,
+        currentHoleIndex: 0,
+        holes: [newHole],
+        features: [],
+        heightMap: [],
+        surfaceMap: [],
+        environmentSettings: this.courseData.environmentSettings,
+        courseGuideId: kyGuide ? 'kyalami' : undefined
+      };
+      this.currentHoleIndex = 0;
+      this.scores = [];
+    } else {
+      const existingIdx = this.courseData.holes.findIndex((h) => h.number === nextNum && !h.isDemo);
+      if (existingIdx >= 0) {
+        this.courseData.holes[existingIdx] = newHole;
+        this.currentHoleIndex = existingIdx;
+      } else {
+        this.courseData.holes.push(newHole);
+        this.currentHoleIndex = this.courseData.holes.length - 1;
+      }
+    }
+
+    this.currentStrokes = 0;
+    this.currentPutts = 0;
+    this.setupHoleVisuals();
+    return this.currentHole;
+  }
+
+  /**
+   * Links any existing or newly selected Kyalami CC hole metadata (graphic overlay, yardages, Pro Tip)
+   * onto the active course hole so 3D simulation & course guide stay in sync.
+   */
+  public applyKyalamiHoleMetadata(holeNum: number, updateParAndName = true): GolfHole | null {
+    const kyGuide = KYALAMI_COURSE_GUIDE.holes.find((h) => h.number === holeNum);
+    if (!kyGuide) return null;
+
+    this.courseData.courseGuideId = 'kyalami';
+    const hole = this.currentHole;
+    if (hole) {
+      hole.courseGuideId = 'kyalami';
+      hole.strokeIndex = kyGuide.strokeIndex;
+      hole.distances = { ...kyGuide.distances };
+      hole.proTip = kyGuide.proTip;
+      hole.overheadImageUrl = kyGuide.imageUrl;
+      hole.distanceGuideImageUrl = kyGuide.distanceGuideUrl;
+      if (updateParAndName) {
+        hole.number = kyGuide.number;
+        hole.par = kyGuide.par;
+        hole.name = `Kyalami Hole ${kyGuide.number}`;
+        hole.isDemo = false;
+        this.courseData.name = KYALAMI_COURSE_GUIDE.name;
+      }
+    }
+    return hole;
+  }
+
   public addHole(par: 3 | 4 | 5 = 4, name?: string): GolfHole | null {
     if (this.courseData.holes.length >= 18) {
       return null;
@@ -969,6 +1112,15 @@ export class CourseManager {
       if (data.version === 2 && data.terrainState) {
         if (data.courseData) {
           this.courseData = data.courseData;
+          if (
+            this.courseData.id === 'default_course' &&
+            Array.isArray(this.courseData.holes) &&
+            this.courseData.holes.length === 1 &&
+            this.courseData.holes[0] &&
+            this.courseData.holes[0].isDemo === undefined
+          ) {
+            this.courseData.holes[0].isDemo = true;
+          }
         }
         this.terrain.importTerrainState(data.terrainState);
 

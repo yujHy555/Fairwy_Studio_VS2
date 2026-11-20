@@ -14,7 +14,8 @@ export interface HdriPreset {
   envIntensity: number;   // 0.2 - 2.5
   shadowDarkness: number; // 0.05 - 0.70
   rotationDeg: number;    // 0 - 360
-  thumbnailBg: string;    // CSS gradient
+  thumbnailBg: string;    // CSS gradient fallback
+  thumbnailImg: string;   // Actual HDRI sphere preview PNG
 }
 
 export const HDRI_PRESETS: HdriPreset[] = [
@@ -32,7 +33,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.65,
     shadowDarkness: 0.22,
     rotationDeg: 0,
-    thumbnailBg: 'linear-gradient(135deg, #1e3a24 0%, #3f6212 50%, #854d0e 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #1e3a24 0%, #3f6212 50%, #854d0e 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/limpopo_golf_course.png'
   },
   {
     id: 'hausdorf_clear_sky',
@@ -48,7 +50,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.70,
     shadowDarkness: 0.25,
     rotationDeg: 45,
-    thumbnailBg: 'linear-gradient(135deg, #0284c7 0%, #38bdf8 50%, #15803d 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #0284c7 0%, #38bdf8 50%, #15803d 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/hausdorf_clear_sky.png'
   },
   {
     id: 'pretoria_gardens',
@@ -64,7 +67,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.60,
     shadowDarkness: 0.20,
     rotationDeg: 90,
-    thumbnailBg: 'linear-gradient(135deg, #14532d 0%, #166534 50%, #065f46 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #14532d 0%, #166534 50%, #065f46 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/pretoria_gardens.png'
   },
   {
     id: 'meadow',
@@ -80,7 +84,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.65,
     shadowDarkness: 0.22,
     rotationDeg: 180,
-    thumbnailBg: 'linear-gradient(135deg, #15803d 0%, #4ade80 50%, #0284c7 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #15803d 0%, #4ade80 50%, #0284c7 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/meadow.png'
   },
   {
     id: 'meadow_2',
@@ -96,7 +101,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.68,
     shadowDarkness: 0.24,
     rotationDeg: 270,
-    thumbnailBg: 'linear-gradient(135deg, #16a34a 0%, #a3e635 50%, #38bdf8 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #16a34a 0%, #a3e635 50%, #38bdf8 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/meadow_2.png'
   },
   {
     id: 'noon_grass',
@@ -112,7 +118,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.75,
     shadowDarkness: 0.28,
     rotationDeg: 0,
-    thumbnailBg: 'linear-gradient(135deg, #ca8a04 0%, #eab308 50%, #15803d 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #ca8a04 0%, #eab308 50%, #15803d 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/noon_grass.png'
   },
   {
     id: 'approaching_storm',
@@ -128,7 +135,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.55,
     shadowDarkness: 0.18,
     rotationDeg: 0,
-    thumbnailBg: 'linear-gradient(135deg, #1e293b 0%, #334155 50%, #475569 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #1e293b 0%, #334155 50%, #475569 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/approaching_storm.png'
   },
   {
     id: 'misty_pines',
@@ -144,7 +152,8 @@ export const HDRI_PRESETS: HdriPreset[] = [
     envIntensity: 0.50,
     shadowDarkness: 0.15,
     rotationDeg: 60,
-    thumbnailBg: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #047857 100%)'
+    thumbnailBg: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #047857 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/misty_pines.png'
   }
 ];
 
@@ -160,6 +169,7 @@ export function presetToEnvironmentSettings(p: HdriPreset): EnvironmentSettings 
     hdriScaleV: 1.0,
     hdriOffsetU: 0.0,
     hdriOffsetV: 0.0,
+    syncSunWithHdri: true,
     sunAzimuth: p.sunAzimuth,
     sunElevation: p.sunElevation,
     sunIntensity: p.sunIntensity,

@@ -3,11 +3,14 @@ import {
   Mesh,
   VertexData,
   StandardMaterial,
+  PBRMaterial,
   Texture,
   Color3
 } from '@babylonjs/core';
 import { MapNGCourseMeta } from '../core/Types';
 import { getDeviceProfile } from '../core/DeviceProfile';
+import { pointInPolygon } from './PolygonMath';
+import { KYALAMI_COURSE_BOUNDARY_METERS } from '../data/KyalamiCourseData';
 
 export interface Decoded16BitHeightmap {
   width: number;
@@ -16,11 +19,20 @@ export interface Decoded16BitHeightmap {
   pixels: Uint16Array;
 }
 
+export interface CourseFootprintMask {
+  polygonMeters?: { x: number; z: number }[];
+  gridRes?: number;
+  gridMask?: Uint8Array;
+  sourceLabel: string;
+  coveragePct: number;
+}
+
 export interface LoadedMapNGSource {
   meta: MapNGCourseMeta;
   heightmap: Decoded16BitHeightmap;
   satelliteImg: HTMLImageElement | null;
   satelliteUrl: string | null;
+  courseFootprint?: CourseFootprintMask;
 }
 
 export interface MapNGCropOptions {
@@ -30,6 +42,8 @@ export interface MapNGCropOptions {
   elevationScale: number; // vertical multiplier (default 1.0)
   gridWidth: number; // active hole width in meters (220)
   gridLength: number; // active hole length in meters (460)
+  isolateCourseOnly?: boolean; // true = discard non-golf suburban terrain outside course footprint
+  courseFootprint?: CourseFootprintMask | null;
 }
 
 export interface ExtractedMapNGHole {
@@ -38,6 +52,9 @@ export interface ExtractedMapNGHole {
   maxHoleElev: number;
   satelliteDataUrl: string | null;
   macroSatelliteDataUrl: string | null;
+  holeCourseMask: Uint8Array | null;
+  courseCenterWorld: { x: number; z: number };
+  courseSpanMeters: number;
   meta: MapNGCourseMeta;
 }
 
@@ -292,8 +309,275 @@ function sampleHeightBilinearMeters(
 }
 
 /**
+ * Identifies the golf course holes footprint on the MapNG satellite / geospatial dataset
+ * so surrounding residential streets and buildings are excluded from 3D terrain geometry.
+ */
+export function detectGolfCourseFootprint(source: LoadedMapNGSource): CourseFootprintMask {
+  const lat = source.meta.centerLat;
+  const lon = source.meta.centerLon;
+  const levelName = (source.meta.levelName || '').toLowerCase();
+  const isKyalamiLocation =
+    (lat !== undefined && lon !== undefined && Math.abs(lat - -25.9754) < 0.03 && Math.abs(lon - 28.059) < 0.03) ||
+    levelName.includes('kyalami') ||
+    levelName.includes('lipizzaner');
+
+  if (isKyalamiLocation) {
+    return {
+      polygonMeters: KYALAMI_COURSE_BOUNDARY_METERS,
+      sourceLabel: 'Kyalami CC 18-Hole Footprint',
+      coveragePct: 26
+    };
+  }
+
+  const res = 128;
+  const gridMask = new Uint8Array(res * res);
+  if (!source.satelliteImg || source.satelliteImg.width <= 0 || source.satelliteImg.height <= 0) {
+    gridMask.fill(1);
+    return { gridRes: res, gridMask, sourceLabel: 'Full DEM Tile (No Satellite)', coveragePct: 100 };
+  }
+
+  const c = document.createElement('canvas');
+  c.width = res;
+  c.height = res;
+  const ctx = c.getContext('2d');
+  if (!ctx) {
+    gridMask.fill(1);
+    return { gridRes: res, gridMask, sourceLabel: 'Full DEM Tile', coveragePct: 100 };
+  }
+  ctx.drawImage(source.satelliteImg, 0, 0, res, res);
+  const px = ctx.getImageData(0, 0, res, res).data;
+
+  let turfSeed = new Uint8Array(res * res);
+  for (let i = 0; i < res * res; i++) {
+    const r = px[i * 4];
+    const g = px[i * 4 + 1];
+    const b = px[i * 4 + 2];
+    // Manicured golf fairways & greens show strong emerald green chromaticity
+    const isFairwayGreen = g > 92 && g - r > 12 && g - b > 22;
+    const isGolfPond = g > 55 && g < 115 && r < 92 && b < 85 && g > b + 8;
+    if (isFairwayGreen || isGolfPond) turfSeed[i] = 1;
+  }
+
+  const dilate = (src: Uint8Array, radius: number): Uint8Array => {
+    const out = new Uint8Array(src.length);
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        if (!src[y * res + x]) continue;
+        for (let dy = -radius; dy <= radius; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= res) continue;
+          for (let dx = -radius; dx <= radius; dx++) {
+            const xx = x + dx;
+            if (xx >= 0 && xx < res) out[yy * res + xx] = 1;
+          }
+        }
+      }
+    }
+    return out;
+  };
+
+  const erode = (src: Uint8Array, minNeighbors: number): Uint8Array => {
+    const out = new Uint8Array(src.length);
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        if (!src[y * res + x]) continue;
+        let cnt = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= res) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx >= 0 && xx < res && src[yy * res + xx]) cnt++;
+          }
+        }
+        if (cnt >= minNeighbors) out[y * res + x] = 1;
+      }
+    }
+    return out;
+  };
+
+  // Bridge gaps between adjacent holes/rough while pruning isolated backyard lawns
+  const closed = erode(dilate(erode(dilate(turfSeed, 2), 4), 2), 3);
+
+  // Connected-component labeling: retain largest golf-course cluster (+ components >= 15% of largest)
+  const labels = new Int32Array(res * res);
+  const compSizes: number[] = [0];
+  const queue = new Int32Array(res * res);
+  let nextLabel = 1;
+  let maxCompSize = 0;
+
+  for (let i = 0; i < res * res; i++) {
+    if (!closed[i] || labels[i] !== 0) continue;
+    let qHead = 0;
+    let qTail = 0;
+    queue[qTail++] = i;
+    labels[i] = nextLabel;
+    while (qHead < qTail) {
+      const cur = queue[qHead++];
+      const cx = cur % res;
+      const cy = (cur - cx) / res;
+      const nbs = [
+        cx > 0 ? cur - 1 : -1,
+        cx + 1 < res ? cur + 1 : -1,
+        cy > 0 ? cur - res : -1,
+        cy + 1 < res ? cur + res : -1
+      ];
+      for (const nb of nbs) {
+        if (nb >= 0 && closed[nb] && labels[nb] === 0) {
+          labels[nb] = nextLabel;
+          queue[qTail++] = nb;
+        }
+      }
+    }
+    compSizes[nextLabel] = qTail;
+    if (qTail > maxCompSize) maxCompSize = qTail;
+    nextLabel++;
+  }
+
+  let keptCount = 0;
+  for (let i = 0; i < res * res; i++) {
+    const lbl = labels[i];
+    if (lbl > 0 && compSizes[lbl] >= Math.max(12, maxCompSize * 0.15)) {
+      gridMask[i] = 1;
+      keptCount++;
+    }
+  }
+
+  if (keptCount < res * res * 0.03) {
+    gridMask.fill(1);
+    keptCount = res * res;
+  }
+
+  return {
+    gridRes: res,
+    gridMask,
+    sourceLabel: 'Auto-Detected Golf Course Turf',
+    coveragePct: Math.round((keptCount / (res * res)) * 100)
+  };
+}
+
+export function isPointInCourseFootprint(
+  footprint: CourseFootprintMask | null | undefined,
+  eastM: number,
+  southM: number,
+  spanW: number,
+  spanL: number
+): boolean {
+  if (!footprint) return true;
+  if (footprint.polygonMeters && footprint.polygonMeters.length >= 3) {
+    return pointInPolygon(eastM, southM, footprint.polygonMeters);
+  }
+  if (footprint.gridMask && footprint.gridRes) {
+    const res = footprint.gridRes;
+    const gx = Math.max(0, Math.min(res - 1, Math.floor((eastM / Math.max(1, spanW)) * res)));
+    const gz = Math.max(0, Math.min(res - 1, Math.floor((southM / Math.max(1, spanL)) * res)));
+    return footprint.gridMask[gz * res + gx] === 1;
+  }
+  return true;
+}
+
+/**
+ * Generates active-hole and full-course macro satellite DataURLs from a MapNG satellite image
+ * and active crop window parameters without re-decoding the 16-bit heightmap.
+ */
+export function extractSatelliteDataUrls(
+  satelliteImg: HTMLImageElement | null,
+  sourceWidthPx: number,
+  sourceHeightPx: number,
+  mpp: number,
+  options: MapNGCropOptions
+): { satelliteDataUrl: string | null; macroSatelliteDataUrl: string | null } {
+  if (!satelliteImg || satelliteImg.width <= 0 || satelliteImg.height <= 0) {
+    return { satelliteDataUrl: null, macroSatelliteDataUrl: null };
+  }
+
+  const profile = getDeviceProfile();
+  const rotRad = (options.rotationDeg * Math.PI) / 180.0;
+  const targetH = Math.min(2048, profile.maxSatelliteTextureSize);
+  const targetW = Math.max(256, Math.round(targetH * (options.gridWidth / options.gridLength)));
+
+  let satelliteDataUrl: string | null = null;
+  let macroSatelliteDataUrl: string | null = null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    const imgScaleX = satelliteImg.width / Math.max(1, sourceWidthPx);
+    const imgScaleY = satelliteImg.height / Math.max(1, sourceHeightPx);
+    const pxCenter = (options.cropCenterX / mpp) * imgScaleX;
+    const pyCenter = (options.cropCenterZ / mpp) * imgScaleY;
+    const holePixW = (options.gridWidth / mpp) * imgScaleX;
+    const holePixH = (options.gridLength / mpp) * imgScaleY;
+
+    ctx.save();
+    ctx.translate(targetW * 0.5, targetH * 0.5);
+    ctx.scale(targetW / holePixW, targetH / holePixH);
+    ctx.rotate(-rotRad);
+    ctx.drawImage(satelliteImg, -pxCenter, -pyCenter);
+    ctx.restore();
+    satelliteDataUrl = canvas.toDataURL('image/jpeg', 0.90);
+  }
+
+  const macroCanvas = document.createElement('canvas');
+  const macroDim = Math.min(2048, profile.maxSatelliteTextureSize);
+  macroCanvas.width = macroDim;
+  macroCanvas.height = macroDim;
+  const mCtx = macroCanvas.getContext('2d');
+  if (mCtx) {
+    const spanW = sourceWidthPx * mpp;
+    const spanL = sourceHeightPx * mpp;
+    const fp = options.isolateCourseOnly !== false ? options.courseFootprint : null;
+
+    if (fp?.polygonMeters && fp.polygonMeters.length >= 3) {
+      // Mask out non-course surroundings so perimeter triangles never sample roof/road colors via bilinear filtering
+      mCtx.fillStyle = '#1e3518';
+      mCtx.fillRect(0, 0, macroDim, macroDim);
+      mCtx.save();
+      mCtx.beginPath();
+      fp.polygonMeters.forEach((p, idx) => {
+        const px = (p.x / Math.max(1, spanW)) * macroDim;
+        const py = (p.z / Math.max(1, spanL)) * macroDim;
+        if (idx === 0) mCtx.moveTo(px, py);
+        else mCtx.lineTo(px, py);
+      });
+      mCtx.closePath();
+      mCtx.clip();
+      mCtx.drawImage(satelliteImg, 0, 0, macroDim, macroDim);
+      mCtx.restore();
+    } else if (fp?.gridMask && fp.gridRes) {
+      mCtx.drawImage(satelliteImg, 0, 0, macroDim, macroDim);
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = fp.gridRes;
+      maskCanvas.height = fp.gridRes;
+      const maskCtx = maskCanvas.getContext('2d');
+      if (maskCtx) {
+        const imgData = maskCtx.createImageData(fp.gridRes, fp.gridRes);
+        for (let i = 0; i < fp.gridMask.length; i++) {
+          imgData.data[i * 4 + 3] = fp.gridMask[i] ? 255 : 0;
+        }
+        maskCtx.putImageData(imgData, 0, 0);
+        mCtx.save();
+        mCtx.globalCompositeOperation = 'destination-in';
+        mCtx.drawImage(maskCanvas, 0, 0, macroDim, macroDim);
+        mCtx.globalCompositeOperation = 'destination-over';
+        mCtx.fillStyle = '#1e3518';
+        mCtx.fillRect(0, 0, macroDim, macroDim);
+        mCtx.restore();
+      }
+    } else {
+      mCtx.drawImage(satelliteImg, 0, 0, macroDim, macroDim);
+    }
+    macroSatelliteDataUrl = macroCanvas.toDataURL('image/jpeg', 0.86);
+  }
+
+  return { satelliteDataUrl, macroSatelliteDataUrl };
+}
+
+/**
  * Extracts a rotated 220m x 460m active golf hole DEM heightfield + co-registered satellite textures
- * directly from a 2048m x 2048m MapNG course export.
+ * and optional golf-course footprint mask directly from a 2048m x 2048m MapNG course export.
  */
 export function extractHoleCrop(
   source: LoadedMapNGSource,
@@ -301,6 +585,8 @@ export function extractHoleCrop(
 ): ExtractedMapNGHole {
   const { meta, heightmap, satelliteImg } = source;
   const mpp = meta.metersPerPixel || 1.0;
+  const spanW = heightmap.width * mpp;
+  const spanL = heightmap.height * mpp;
   const minH = meta.minHeightMeters;
   const maxH = meta.maxHeightMeters;
   const rotRad = (options.rotationDeg * Math.PI) / 180.0;
@@ -336,45 +622,65 @@ export function extractHoleCrop(
     baseHeights[i] = 0.5 + (rawMeters[i] - minHoleElev) * scaleElev;
   }
 
-  let satelliteDataUrl: string | null = null;
-  let macroSatelliteDataUrl: string | null = null;
-
-  if (satelliteImg && satelliteImg.width > 0 && satelliteImg.height > 0) {
-    const profile = getDeviceProfile();
-    const targetH = Math.min(2048, profile.maxSatelliteTextureSize);
-    const targetW = Math.max(256, Math.round(targetH * (options.gridWidth / options.gridLength)));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = targetW;
-    canvas.height = targetH;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const imgScaleX = satelliteImg.width / heightmap.width;
-      const imgScaleY = satelliteImg.height / heightmap.height;
-      const pxCenter = (options.cropCenterX / mpp) * imgScaleX;
-      const pyCenter = (options.cropCenterZ / mpp) * imgScaleY;
-      const holePixW = (options.gridWidth / mpp) * imgScaleX;
-      const holePixH = (options.gridLength / mpp) * imgScaleY;
-
-      ctx.save();
-      ctx.translate(targetW * 0.5, targetH * 0.5);
-      ctx.scale(targetW / holePixW, targetH / holePixH);
-      ctx.rotate(-rotRad);
-      ctx.drawImage(satelliteImg, -pxCenter, -pyCenter);
-      ctx.restore();
-      satelliteDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+  const footprint = options.isolateCourseOnly !== false ? (options.courseFootprint || source.courseFootprint) : null;
+  let holeCourseMask: Uint8Array | null = null;
+  if (footprint) {
+    const mask = new Uint8Array(options.gridWidth * options.gridLength);
+    let insideCount = 0;
+    for (let cz = 0; cz < options.gridLength; cz++) {
+      const dz = cz + 0.5 - halfL;
+      for (let cx = 0; cx < options.gridWidth; cx++) {
+        const dx = cx + 0.5 - halfW;
+        const eastM = options.cropCenterX + dx * cosR + dz * sinR;
+        const northDelta = -dx * sinR + dz * cosR;
+        const southM = options.cropCenterZ - northDelta;
+        if (isPointInCourseFootprint(footprint, eastM, southM, spanW, spanL)) {
+          mask[cz * options.gridWidth + cx] = 1;
+          insideCount++;
+        }
+      }
     }
-
-    const macroCanvas = document.createElement('canvas');
-    const macroDim = Math.min(1024, profile.maxSatelliteTextureSize);
-    macroCanvas.width = macroDim;
-    macroCanvas.height = macroDim;
-    const mCtx = macroCanvas.getContext('2d');
-    if (mCtx) {
-      mCtx.drawImage(satelliteImg, 0, 0, macroDim, macroDim);
-      macroSatelliteDataUrl = macroCanvas.toDataURL('image/jpeg', 0.82);
+    // Safety guard: never collapse GolfTerrain if user centered outside course perimeter
+    if (insideCount > options.gridWidth * options.gridLength * 0.02) {
+      holeCourseMask = mask;
     }
   }
+
+  // Compute tight 3D bounding center & span of isolated golf course holes for overview camera
+  let courseCenterWorld = { x: halfW, z: halfL };
+  let courseSpanMeters = Math.max(spanW, spanL);
+  if (footprint) {
+    let minWx = Infinity;
+    let maxWx = -Infinity;
+    let minWz = Infinity;
+    let maxWz = -Infinity;
+    const stepM = 32;
+    for (let sm = 0; sm <= spanL; sm += stepM) {
+      const dn = options.cropCenterZ - sm;
+      for (let em = 0; em <= spanW; em += stepM) {
+        if (!isPointInCourseFootprint(footprint, em, sm, spanW, spanL)) continue;
+        const de = em - options.cropCenterX;
+        const wx = halfW + (de * cosR - dn * sinR);
+        const wz = halfL + (de * sinR + dn * cosR);
+        if (wx < minWx) minWx = wx;
+        if (wx > maxWx) maxWx = wx;
+        if (wz < minWz) minWz = wz;
+        if (wz > maxWz) maxWz = wz;
+      }
+    }
+    if (maxWx > minWx && maxWz > minWz) {
+      courseCenterWorld = { x: (minWx + maxWx) * 0.5, z: (minWz + maxWz) * 0.5 };
+      courseSpanMeters = Math.max(maxWx - minWx, maxWz - minWz, 480);
+    }
+  }
+
+  const { satelliteDataUrl, macroSatelliteDataUrl } = extractSatelliteDataUrls(
+    satelliteImg,
+    heightmap.width,
+    heightmap.height,
+    mpp,
+    { ...options, courseFootprint: footprint }
+  );
 
   return {
     baseHeights,
@@ -382,18 +688,25 @@ export function extractHoleCrop(
     maxHoleElev,
     satelliteDataUrl,
     macroSatelliteDataUrl,
+    holeCourseMask,
+    courseCenterWorld,
+    courseSpanMeters,
     meta: {
       ...meta,
       cropOriginX: options.cropCenterX,
       cropOriginZ: options.cropCenterZ,
-      cropRotationRad: rotRad
+      cropRotationRad: rotRad,
+      cropWidthMeters: options.gridWidth,
+      cropLengthMeters: options.gridLength,
+      sourceSpanW: spanW,
+      sourceSpanH: spanL
     }
   };
 }
 
 /**
- * Approach B: Builds a coarse 128x128 (2048m x 2048m) macro surround terrain mesh around the active hole
- * so imported MapNG hills and distant context continue seamlessly to the horizon without high vertex cost.
+ * Approach B: Builds a compacted 1:1 macro surround mesh covering ONLY the identified golf course holes
+ * footprint around the active hole (completely discarding surrounding neighborhood streets & buildings).
  */
 export function buildMacroSurroundMesh(
   scene: Scene,
@@ -405,7 +718,8 @@ export function buildMacroSurroundMesh(
   const existing = scene.getMeshByName('MapNGMacroSurround');
   if (existing) existing.dispose();
 
-  const segs = 128;
+  const profile = getDeviceProfile();
+  const segs = profile.tier === 'high' ? 192 : 128;
   const cols = segs + 1;
   const rows = segs + 1;
   const mpp = source.meta.metersPerPixel || 1.0;
@@ -418,27 +732,25 @@ export function buildMacroSurroundMesh(
   const cosR = Math.cos(rotRad);
   const sinR = Math.sin(rotRad);
   const scaleElev = options.elevationScale || 1.0;
+  const footprint = options.isolateCourseOnly !== false ? (options.courseFootprint || source.courseFootprint) : null;
 
-  const minDx = -spanW * 0.5;
-  const minDz = -spanL * 0.5;
-
-  const positions = new Float32Array(cols * rows * 3);
-  const normals = new Float32Array(cols * rows * 3);
-  const uvs = new Float32Array(cols * rows * 2);
+  const rawPositions = new Float32Array(cols * rows * 3);
+  const rawUvs = new Float32Array(cols * rows * 2);
 
   for (let r = 0; r < rows; r++) {
     const vFrac = r / segs;
-    const dz = minDz + vFrac * spanL;
-    const wz = halfL + dz;
+    const southM = (1.0 - vFrac) * spanL;
+    const dn = options.cropCenterZ - southM;
 
     for (let c = 0; c < cols; c++) {
       const uFrac = c / segs;
-      const dx = minDx + uFrac * spanW;
-      const wx = halfW + dx;
+      const eastM = uFrac * spanW;
+      const de = eastM - options.cropCenterX;
 
-      const eastM = options.cropCenterX + dx * cosR + dz * sinR;
-      const northDelta = -dx * sinR + dz * cosR;
-      const southM = options.cropCenterZ - northDelta;
+      const dx = de * cosR - dn * sinR;
+      const dz = de * sinR + dn * cosR;
+      const wx = halfW + dx;
+      const wz = halfL + dz;
 
       let wy =
         0.5 +
@@ -453,44 +765,86 @@ export function buildMacroSurroundMesh(
           minHoleElev) *
           scaleElev;
 
-      // Depress strictly inside active-hole footprint so Approach B never z-fights high-res GolfTerrain
-      if (wx > 2 && wx < options.gridWidth - 2 && wz > 2 && wz < options.gridLength - 2) {
-        wy -= 3.2;
+      if (wx > 3 && wx < options.gridWidth - 3 && wz > 3 && wz < options.gridLength - 3) {
+        wy -= 3.5;
       }
 
       const idx = r * cols + c;
-      positions[idx * 3] = wx;
-      positions[idx * 3 + 1] = wy;
-      positions[idx * 3 + 2] = wz;
-
-      // UVs map rotated world coords into north-up source image [0..1]
-      uvs[idx * 2] = eastM / spanW;
-      uvs[idx * 2 + 1] = 1.0 - southM / spanL;
-
-      normals[idx * 3] = 0;
-      normals[idx * 3 + 1] = 1;
-      normals[idx * 3 + 2] = 0;
+      rawPositions[idx * 3] = wx;
+      rawPositions[idx * 3 + 1] = wy;
+      rawPositions[idx * 3 + 2] = wz;
+      rawUvs[idx * 2] = uFrac;
+      rawUvs[idx * 2 + 1] = vFrac;
     }
   }
 
-  const indices = new Uint32Array(segs * segs * 6);
-  let iPtr = 0;
+  // Filter quads to ONLY golf course property footprint and compact vertex arrays
+  const rawIndices: number[] = [];
+  const oldToNew = new Int32Array(cols * rows).fill(-1);
+  let keptVertCount = 0;
+
+  const ensureVertex = (origIdx: number): number => {
+    let mapped = oldToNew[origIdx];
+    if (mapped === -1) {
+      mapped = keptVertCount++;
+      oldToNew[origIdx] = mapped;
+    }
+    return mapped;
+  };
+
   for (let r = 0; r < segs; r++) {
+    const vMid = (r + 0.5) / segs;
+    const southMid = (1.0 - vMid) * spanL;
     for (let c = 0; c < segs; c++) {
-      const i00 = r * cols + c;
-      const i10 = i00 + 1;
-      const i01 = (r + 1) * cols + c;
-      const i11 = i01 + 1;
-      indices[iPtr++] = i00;
-      indices[iPtr++] = i01;
-      indices[iPtr++] = i11;
-      indices[iPtr++] = i00;
-      indices[iPtr++] = i11;
-      indices[iPtr++] = i10;
+      const uMid = (c + 0.5) / segs;
+      const eastMid = uMid * spanW;
+      if (footprint && !isPointInCourseFootprint(footprint, eastMid, southMid, spanW, spanL)) {
+        continue;
+      }
+
+      const i00 = ensureVertex(r * cols + c);
+      const i10 = ensureVertex(r * cols + c + 1);
+      const i01 = ensureVertex((r + 1) * cols + c);
+      const i11 = ensureVertex((r + 1) * cols + c + 1);
+
+      rawIndices.push(i00, i11, i01, i00, i10, i11);
     }
   }
 
+  // Safety fallback if mask was empty
+  if (rawIndices.length === 0) {
+    oldToNew.fill(-1);
+    keptVertCount = 0;
+    for (let r = 0; r < segs; r++) {
+      for (let c = 0; c < segs; c++) {
+        const i00 = ensureVertex(r * cols + c);
+        const i10 = ensureVertex(r * cols + c + 1);
+        const i01 = ensureVertex((r + 1) * cols + c);
+        const i11 = ensureVertex((r + 1) * cols + c + 1);
+        rawIndices.push(i00, i11, i01, i00, i10, i11);
+      }
+    }
+  }
+
+  const positions = new Float32Array(keptVertCount * 3);
+  const normals = new Float32Array(keptVertCount * 3);
+  const uvs = new Float32Array(keptVertCount * 2);
+
+  for (let origIdx = 0; origIdx < oldToNew.length; origIdx++) {
+    const mapped = oldToNew[origIdx];
+    if (mapped === -1) continue;
+    positions[mapped * 3] = rawPositions[origIdx * 3];
+    positions[mapped * 3 + 1] = rawPositions[origIdx * 3 + 1];
+    positions[mapped * 3 + 2] = rawPositions[origIdx * 3 + 2];
+    uvs[mapped * 2] = rawUvs[origIdx * 2];
+    uvs[mapped * 2 + 1] = rawUvs[origIdx * 2 + 1];
+  }
+
+  const indices = new Uint32Array(rawIndices);
   VertexData.ComputeNormals(positions, indices, normals);
+  if (normals.length > 1 && normals[1] < 0) {
+    for (let i = 0; i < normals.length; i++) normals[i] = -normals[i];
+  }
 
   const mesh = new Mesh('MapNGMacroSurround', scene);
   const vd = new VertexData();
@@ -500,15 +854,20 @@ export function buildMacroSurroundMesh(
   vd.indices = indices;
   vd.applyToMesh(mesh, false);
 
-  const mat = new StandardMaterial('mapngSurroundMat', scene);
-  mat.specularColor = new Color3(0.05, 0.05, 0.05);
-  mat.diffuseColor = new Color3(0.85, 0.88, 0.80);
+  const mat = new PBRMaterial('mapngSurroundMat', scene);
+  mat.metallic = 0.0;
+  mat.roughness = 0.85;
+  mat.backFaceCulling = false;
   if (macroSatelliteDataUrl) {
+    mat.albedoColor = Color3.White();
     const tex = new Texture(macroSatelliteDataUrl, scene, false, true, Texture.TRILINEAR_SAMPLINGMODE);
     tex.wrapU = Texture.CLAMP_ADDRESSMODE;
     tex.wrapV = Texture.CLAMP_ADDRESSMODE;
-    tex.anisotropicFilteringLevel = Math.min(4, getDeviceProfile().maxAnisotropy);
-    mat.diffuseTexture = tex;
+    tex.anisotropicFilteringLevel = Math.min(4, profile.maxAnisotropy);
+    mat.albedoTexture = tex;
+    (mat as any)._satTex = tex;
+  } else {
+    mat.albedoColor = new Color3(0.28, 0.44, 0.16);
   }
 
   mesh.material = mat;
@@ -516,4 +875,45 @@ export function buildMacroSurroundMesh(
   mesh.isPickable = false;
   mesh.freezeWorldMatrix();
   return mesh;
+}
+
+/**
+ * Syncs the Ground <-> Satellite mix or updated satellite texture on the 2km MapNG macro surround mesh.
+ */
+export function updateMacroSurroundMix(
+  mesh: Mesh | null,
+  satelliteMix: number,
+  groundBaseColorHex: string,
+  macroSatelliteDataUrl?: string | null
+) {
+  if (!mesh || mesh.isDisposed()) return;
+  const mat = mesh.material as PBRMaterial | null;
+  if (!mat) return;
+  const mix = Math.max(0, Math.min(1, satelliteMix));
+
+  if (macroSatelliteDataUrl !== undefined) {
+    const prevSat = (mat as any)._satTex as Texture | null | undefined;
+    if (prevSat) {
+      prevSat.dispose();
+      (mat as any)._satTex = null;
+    }
+    if (macroSatelliteDataUrl) {
+      const tex = new Texture(macroSatelliteDataUrl, mesh.getScene(), false, true, Texture.TRILINEAR_SAMPLINGMODE);
+      tex.wrapU = Texture.CLAMP_ADDRESSMODE;
+      tex.wrapV = Texture.CLAMP_ADDRESSMODE;
+      tex.anisotropicFilteringLevel = Math.min(4, getDeviceProfile().maxAnisotropy);
+      (mat as any)._satTex = tex;
+    }
+  }
+
+  const satTex = ((mat as any)._satTex as Texture | null | undefined) ?? null;
+  const baseTint = Color3.FromHexString(groundBaseColorHex || '#4c7426');
+  if (satTex && mix > 0.01) {
+    satTex.level = 1.0;
+    mat.albedoTexture = satTex;
+    mat.albedoColor = Color3.Lerp(baseTint, Color3.White(), mix);
+  } else {
+    mat.albedoTexture = null;
+    mat.albedoColor = baseTint;
+  }
 }

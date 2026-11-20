@@ -50,6 +50,10 @@ export interface MapNGCourseMeta {
   cropOriginX?: number;
   cropOriginZ?: number;
   cropRotationRad?: number;
+  cropWidthMeters?: number;
+  cropLengthMeters?: number;
+  sourceSpanW?: number;
+  sourceSpanH?: number;
 }
 
 export interface PlacedFeature {
@@ -62,9 +66,21 @@ export interface PlacedFeature {
 }
 
 export interface GolfHole {
-  number: number;       // 1 - 9
+  number: number;       // 1 - 18
   par: 3 | 4 | 5;
   name: string;
+  isDemo?: boolean;
+  strokeIndex?: number;
+  distances?: {
+    yellow: number;
+    white: number;
+    blue: number;
+    red: number;
+  };
+  proTip?: string;
+  overheadImageUrl?: string;
+  distanceGuideImageUrl?: string;
+  courseGuideId?: string;
   teePosition: Vector3D;
   pinPosition: Vector3D;
   waypoints: Vector3D[]; // optional dogleg fairway target markers
@@ -79,6 +95,7 @@ export interface EnvironmentSettings {
   hdriScaleV?: number;        // UV scale V
   hdriOffsetU?: number;       // UV offset U
   hdriOffsetV?: number;       // UV offset V
+  syncSunWithHdri?: boolean;  // rotate directional sun & shadows proportionally with HDRI rotation
   sunAzimuth: number;         // degrees (0 - 360)
   sunElevation: number;       // degrees (5 - 85)
   sunIntensity: number;       // 0.2 - 3.0
@@ -99,6 +116,7 @@ export interface GolfCourseData {
   surfaceMap: number[]; // Flattened array of SurfaceType
   environmentSettings?: EnvironmentSettings;
   mapngMeta?: MapNGCourseMeta;
+  courseGuideId?: string;
 }
 
 export interface ClubSpec {
