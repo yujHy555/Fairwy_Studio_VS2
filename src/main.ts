@@ -40,7 +40,7 @@ import '@babylonjs/core/Materials/Textures/Loaders/hdrTextureLoader.js';
 import '@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent.js';
 
 import './style.css';
-import { GOLF_CONSTANTS, SurfaceType } from './core/Constants';
+import { GOLF_CONSTANTS, SurfaceType, SURFACE_PROPERTIES } from './core/Constants';
 import { PresetFeature, ClubSpec } from './core/Types';
 import { HavokManager } from './physics/HavokManager';
 import { TerrainGrid, StampedFeatureRecord, FeatureMaterialSettings, FeatureSubMaterialId } from './terrain/TerrainGrid';
@@ -55,6 +55,13 @@ import { CourseManager } from './game/CourseManager';
 import { AimSystem } from './game/AimSystem';
 import { UIController } from './ui/UIController';
 import { DesignerBrushVisualizer } from './terrain/DesignerBrushVisualizer';
+import { FeatureTracer } from './terrain/FeatureTracer';
+import {
+  LoadedMapNGSource,
+  extractHoleCrop,
+  buildMacroSurroundMesh
+} from './terrain/MapNGImporter';
+import { PolygonPoint } from './terrain/PolygonMath';
 import { soundFx } from './core/Audio';
 import { getDeviceProfile } from './core/DeviceProfile';
 
@@ -179,6 +186,10 @@ class FairwayStudioApp {
   private swingEngine!: SwingEngine;
   private aimSystem!: AimSystem;
   private brushVisualizer!: DesignerBrushVisualizer;
+  private featureTracer!: FeatureTracer;
+  private macroSurroundMesh: Mesh | null = null;
+  private wasCameraDetachedForTrace = false;
+  private lastSavedSatelliteOpacity = 0.72;
   private cameraCtrl!: CameraController;
   private ui!: UIController;
   private sunLight!: DirectionalLight;
@@ -319,8 +330,52 @@ class FairwayStudioApp {
     // 8. Clean 3D Aim Chevron Indicator with real-time ground shadow
     this.aimSystem = new AimSystem(this.scene, this.terrain, this.shadowGenerator);
 
-    // 9. Interactive 3D Circular Brush Visualizer for Course Designer
+    // 9. Interactive 3D Circular Brush Visualizer & Satellite Feature Tracer for Course Designer
     this.brushVisualizer = new DesignerBrushVisualizer(this.scene, this.terrain);
+    this.featureTracer = new FeatureTracer(this.scene, this.terrain, {
+      onCommitTracedFeature: (surfaceType: SurfaceType, contour: PolygonPoint[]) => {
+        this.runWithTerraformingLoader(() => {
+          const snap = this.captureHistorySnapshot(`Trace ${surfaceType}`);
+          const newIdx = this.terrain.addTracedFeature(surfaceType, contour);
+          this.courseManager.refreshWaterMeshes();
+          this.courseManager.refreshSceneryForFeatures();
+          if (this.terrain.terrainMesh) {
+            this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+          }
+          this.greenVisualizer?.rebuildSlopeGrid();
+          this.refreshOutliner();
+          this.selectCourseFeature(newIdx);
+          this.recordHistoryStep(snap.description, snap);
+          const label = (SURFACE_PROPERTIES[surfaceType]?.name || String(surfaceType)).toUpperCase();
+          this.ui?.showToast(`✨ Created traced ${label} contour!`, 'success', 2400);
+        }, 'Creating Traced Feature & Analytical Collars...');
+      },
+      onContourEdited: (featureIndex: number, newContour: PolygonPoint[], isFinal: boolean) => {
+        if (!isFinal) {
+          this.terrain.updateTracedFeatureContour(featureIndex, newContour, true);
+          this.updateFeatureDrapeMesh(featureIndex);
+          return;
+        }
+        this.runWithTerraformingLoader(() => {
+          const snap = this.captureHistorySnapshot('Edit Traced Contour');
+          this.terrain.updateTracedFeatureContour(featureIndex, newContour, false);
+          this.courseManager.refreshWaterMeshes();
+          if (this.terrain.terrainMesh) {
+            this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+          }
+          this.selectCourseFeature(featureIndex);
+          this.recordHistoryStep(snap.description, snap);
+        }, 'Updating Traced Contour...');
+      },
+      onTraceStateChange: ({ mode, targetSurface, pointCount }) => {
+        this.ui?.updateTraceUi(mode, targetSurface, pointCount);
+        this.terrain.setSatelliteOverlayOverFeatures(mode !== 'off' ? 0.30 : 0.0);
+        if (mode === 'off' && this.wasCameraDetachedForTrace) {
+          this.cameraCtrl.camera.attachControl(this.canvas, true, false);
+          this.wasCameraDetachedForTrace = false;
+        }
+      }
+    });
 
     // 10. Setup UI & Event Handlers
     this.setupUI();
@@ -952,6 +1007,36 @@ class FairwayStudioApp {
       },
       onDeleteFeature: (featureIndex) => {
         this.deleteFeature(featureIndex);
+      },
+      onApplyMapNGImport: (payload) => {
+        this.applyMapNGImport(payload);
+      },
+      onToggleSatelliteOverlay: () => {
+        this.toggleSatelliteOverlay();
+      },
+      onSatelliteOpacityChange: (opacity) => {
+        this.setSatelliteOverlayOpacity(opacity);
+      },
+      onTopDownTraceCam: () => {
+        this.cameraCtrl.setTopDownView(this.terrain.width * 0.5, this.terrain.length * 0.5);
+        this.ui.showToast('📐 Top-Down Tracing Camera Ready', 'info', 1800);
+      },
+      onTraceModeChange: (mode, surface) => {
+        this.featureTracer?.setTraceMode(mode, surface);
+        if (mode !== 'off') {
+          this.selectCourseFeature(-1);
+        }
+      },
+      onTraceFinish: () => {
+        if (!this.featureTracer?.finishTrace()) {
+          this.ui.showToast('Place at least 3 points before closing contour.', 'warning', 2000);
+        }
+      },
+      onTraceCancel: () => {
+        this.featureTracer?.cancelTrace();
+      },
+      onTraceUndoPoint: () => {
+        this.featureTracer?.undoLastPoint();
       },
       onOutlinerSelect: (item) => {
         if (item.featureIndex !== undefined) {
@@ -1663,7 +1748,8 @@ class FairwayStudioApp {
   private captureHistorySnapshot(description: string): DesignerHistoryStep {
     const stampedFeatures = this.terrain.stampedFeatures.map(f => ({
       ...f,
-      doglegPoints: f.doglegPoints ? f.doglegPoints.map(p => ({ ...p })) : undefined
+      doglegPoints: f.doglegPoints ? f.doglegPoints.map(p => ({ ...p })) : undefined,
+      contour: f.contour ? f.contour.map(p => ({ ...p })) : undefined
     }));
     const baseHeights = new Float32Array(this.terrain.baseHeights);
     const pristine = this.terrain.getPristineNaturalHeights();
@@ -1963,7 +2049,30 @@ class FairwayStudioApp {
       }
 
       if (this.activeMode === 'designer') {
+        const pickTerrainPt = () => {
+          const p = this.scene.pick(
+            this.scene.pointerX,
+            this.scene.pointerY,
+            (m) => m.name === 'GolfTerrain'
+          );
+          return p && p.hit && p.pickedPoint
+            ? { x: p.pickedPoint.x, y: p.pickedPoint.y, z: p.pickedPoint.z }
+            : null;
+        };
+
+        if (pointerInfo.type === PointerEventTypes.POINTERDOUBLETAP) {
+          if (this.featureTracer?.getMode() === 'spline') {
+            this.featureTracer.finishTrace();
+            return;
+          }
+        }
+
         if (pointerInfo.type === PointerEventTypes.POINTERMOVE) {
+          if (this.featureTracer && (this.featureTracer.getMode() !== 'off' || this.featureTracer.isBusyDragging())) {
+            const consumedMove = this.featureTracer.handlePointerMove(pickTerrainPt());
+            this.brushVisualizer.setVisible(false);
+            if (consumedMove || this.featureTracer.getMode() !== 'off') return;
+          }
           if (this.activeDesignerTool === 'erase' || this.activeDesignerTool === 'select') {
             this.brushVisualizer.setVisible(false);
           } else {
@@ -1985,6 +2094,15 @@ class FairwayStudioApp {
             }
           }
         } else if (pointerInfo.type === PointerEventTypes.POINTERDOWN) {
+          if (pointerInfo.event.button === 0 && this.featureTracer && (this.featureTracer.getMode() !== 'off' || this.activeDesignerTool === 'select')) {
+            if (this.featureTracer.handlePointerDown(pointerInfo.event as PointerEvent, pickTerrainPt())) {
+              if (this.featureTracer.isBusyDragging() && !this.wasCameraDetachedForTrace) {
+                this.cameraCtrl.camera.detachControl();
+                this.wasCameraDetachedForTrace = true;
+              }
+              return;
+            }
+          }
           // Holding down LMB (0) orbits, MMB (1) pans, and RMB (2) pans & zooms.
           // A clean click without dragging (< 5px) selects, sculpts, or places!
           if (pointerInfo.event.button === 0 || pointerInfo.event.button === 2) {
@@ -1993,6 +2111,14 @@ class FairwayStudioApp {
             this.pointerDownY = pointerInfo.event.clientY;
           }
         } else if (pointerInfo.type === PointerEventTypes.POINTERUP) {
+          if (this.wasCameraDetachedForTrace) {
+            this.cameraCtrl.camera.attachControl(this.canvas, true, false);
+            this.wasCameraDetachedForTrace = false;
+          }
+          if (this.featureTracer?.handlePointerUp()) {
+            this.isPointerDownInDesigner = false;
+            return;
+          }
           if (this.isPointerDownInDesigner && (pointerInfo.event.button === 0 || pointerInfo.event.button === 2)) {
             this.isPointerDownInDesigner = false;
 
@@ -2664,6 +2790,7 @@ class FairwayStudioApp {
         this.featureSurfaceFillMesh = null;
       }
       this.selectMesh(null);
+      this.featureTracer?.syncSelectedFeatureNodes(-1);
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
       this.ui.updateDevSelectedFeatureMaterial(null, null);
       this.terrain.setGroundUvSettings(this.terrain.getGroundUvSettings());
@@ -2695,6 +2822,7 @@ class FairwayStudioApp {
 
     // 1. Build & update the terrain-conforming drape ribbon outline
     this.updateFeatureDrapeMesh(index);
+    this.featureTracer?.syncSelectedFeatureNodes(index);
 
     // 2. Attach transform gizmo to central feature proxy
     this.selectMesh(this.featureGizmoProxy);
@@ -4448,6 +4576,7 @@ class FairwayStudioApp {
     this.recordHistoryStep('Delete Feature: ' + featName);
     const ok = this.terrain.removeFeature(idx);
     if (ok) {
+      this.courseManager.refreshWaterMeshes();
       this.selectCourseFeature(-1);
       this.ui.showToast(`🗑️ Deleted ${featName}`, 'info', 2000);
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
@@ -4457,6 +4586,114 @@ class FairwayStudioApp {
       }
       this.updateDevStats();
     }
+  }
+
+  public toggleSatelliteOverlay() {
+    if (!this.terrain.satelliteOverlayTex) {
+      this.ui.showToast('Import a MapNG course with satellite texture first to toggle [T].', 'info', 2400);
+      return;
+    }
+    if (this.terrain.satelliteEnabled && this.terrain.satelliteOpacity > 0.01) {
+      this.lastSavedSatelliteOpacity = this.terrain.satelliteOpacity;
+      this.terrain.setSatelliteOpacity(0.0, false);
+      this.ui.updateSatelliteUi(false, 0.0);
+      this.ui.showToast('🛰️ Satellite Overlay OFF [T]', 'info', 1400);
+    } else {
+      const nextOp = this.lastSavedSatelliteOpacity > 0.05 ? this.lastSavedSatelliteOpacity : 0.72;
+      this.terrain.setSatelliteOpacity(nextOp, true);
+      this.ui.updateSatelliteUi(true, nextOp);
+      this.ui.showToast(`🛰️ Satellite Overlay ON (${Math.round(nextOp * 100)}%) [T]`, 'info', 1400);
+    }
+  }
+
+  public setSatelliteOverlayOpacity(opacity: number) {
+    if (opacity > 0.01) {
+      this.lastSavedSatelliteOpacity = opacity;
+    }
+    const hasTex = Boolean(this.terrain.satelliteOverlayTex);
+    const enabled = hasTex && opacity > 0.005;
+    this.terrain.setSatelliteOpacity(opacity, enabled);
+    this.ui.updateSatelliteUi(enabled, opacity);
+  }
+
+  public applyMapNGImport(payload: {
+    source: LoadedMapNGSource;
+    cropCenterX: number;
+    cropCenterZ: number;
+    rotationDeg: number;
+    elevationScale: number;
+    clearFeatures: boolean;
+  }) {
+    this.runWithTerraformingLoader(() => {
+      const snap = this.captureHistorySnapshot('Import MapNG Terrain');
+      const cropOpts = {
+        cropCenterX: payload.cropCenterX,
+        cropCenterZ: payload.cropCenterZ,
+        rotationDeg: payload.rotationDeg,
+        elevationScale: payload.elevationScale,
+        gridWidth: this.terrain.width,
+        gridLength: this.terrain.length
+      };
+      const extracted = extractHoleCrop(payload.source, cropOpts);
+      const satOpacity = extracted.satelliteDataUrl ? 0.72 : 0.0;
+      if (satOpacity > 0) this.lastSavedSatelliteOpacity = satOpacity;
+
+      this.terrain.loadMapNGHeightfield(
+        extracted.baseHeights,
+        extracted.satelliteDataUrl,
+        satOpacity,
+        payload.clearFeatures
+      );
+
+      if (this.macroSurroundMesh) {
+        this.macroSurroundMesh.dispose();
+        this.macroSurroundMesh = null;
+      }
+      this.macroSurroundMesh = buildMacroSurroundMesh(
+        this.scene,
+        payload.source,
+        cropOpts,
+        extracted.minHoleElev,
+        extracted.macroSatelliteDataUrl
+      );
+
+      // Re-seat Tee & Pin markers accurately on imported MapNG DEM elevations
+      const hole = this.courseManager.currentHole;
+      if (hole) {
+        hole.teePosition.y = this.terrain.getElevation(hole.teePosition.x, hole.teePosition.z);
+        hole.pinPosition.y = this.terrain.getElevation(hole.pinPosition.x, hole.pinPosition.z);
+        if (this.courseManager.activeTeeMesh) {
+          this.courseManager.activeTeeMesh.unfreezeWorldMatrix();
+          this.courseManager.activeTeeMesh.position.y = hole.teePosition.y;
+          this.courseManager.activeTeeMesh.computeWorldMatrix(true);
+        }
+        if (this.courseManager.activePinMesh) {
+          this.courseManager.activePinMesh.unfreezeWorldMatrix();
+          this.courseManager.activePinMesh.position.y = hole.pinPosition.y;
+          this.courseManager.activePinMesh.computeWorldMatrix(true);
+        }
+      }
+
+      this.courseManager.courseData.mapngMeta = extracted.meta;
+      this.courseManager.refreshWaterMeshes();
+      this.courseManager.refreshSceneryForFeatures();
+      if (this.terrain.terrainMesh) {
+        this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+      }
+      this.greenVisualizer?.rebuildSlopeGrid();
+      this.selectCourseFeature(-1);
+      this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
+      this.refreshOutliner();
+      this.ui.updateSatelliteUi(Boolean(extracted.satelliteDataUrl), satOpacity);
+      this.cameraCtrl.setTopDownView(this.terrain.width * 0.5, this.terrain.length * 0.5);
+      this.recordHistoryStep(snap.description, snap);
+      this.updateDevStats();
+      this.ui.showToast(
+        `🗺️ Loaded MapNG Terrain: ${payload.source.meta.levelName} (${extracted.minHoleElev.toFixed(1)}m–${extracted.maxHoleElev.toFixed(1)}m)`,
+        'success',
+        3600
+      );
+    }, 'Importing MapNG 16-bit DEM & Satellite...');
   }
 
   /**

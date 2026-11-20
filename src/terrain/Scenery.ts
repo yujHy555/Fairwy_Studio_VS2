@@ -22,6 +22,7 @@ import {
 } from '@babylonjs/core';
 import { GOLF_CONSTANTS } from '../core/Constants';
 import { getDeviceProfile } from '../core/DeviceProfile';
+import { earclipTriangulate2D, signedDistanceToPolygon } from './PolygonMath';
 import { RealisticTextures } from './RealisticTextures';
 
 /**
@@ -1998,6 +1999,77 @@ export class SceneryFactory {
     water.position.set(x, rimElevation - 0.19, z);
     // Match the exact rotation angle of the terrain's stamped feature (note: TerrainGrid uses localX = dx*cos(-rot) - dz*sin(-rot))
     water.rotation.y = -rotationRad;
+    water.material = this.matWater;
+    water.receiveShadows = true;
+    water.isPickable = true;
+    return water;
+  }
+
+  /**
+   * Creates a triangulated 3D water surface mesh matching any arbitrary traced MapNG pond/lake contour
+   * using pure 2D ear-clipping triangulation and inward shoreline vertex alpha feathering.
+   */
+  public createPolygonWaterPlane(
+    contourWorldPts: readonly { x: number; z: number }[],
+    rimElevation: number,
+    centerX: number,
+    centerZ: number
+  ): Mesh {
+    const water = new Mesh(`water_poly_${Math.round(centerX)}_${Math.round(centerZ)}`, this.scene);
+    const tri = earclipTriangulate2D(contourWorldPts);
+    const verts = tri.vertices;
+    if (verts.length < 3 || tri.indices.length < 3) {
+      return this.createWaterPlane(centerX, rimElevation, centerZ, 16, 16, 0);
+    }
+
+    // Add an interior centroid vertex if useful or compute smooth vertex depth color via edge distance
+    const count = verts.length;
+    const positions = new Float32Array(count * 3);
+    const normals = new Float32Array(count * 3);
+    const uvs = new Float32Array(count * 2);
+    const colors = new Float32Array(count * 4);
+
+    for (let i = 0; i < count; i++) {
+      const lx = verts[i].x - centerX;
+      const lz = verts[i].z - centerZ;
+      positions[i * 3] = lx;
+      positions[i * 3 + 1] = 0;
+      positions[i * 3 + 2] = lz;
+
+      normals[i * 3] = 0;
+      normals[i * 3 + 1] = 1;
+      normals[i * 3 + 2] = 0;
+
+      uvs[i * 2] = 0.5 + lx / 28.0;
+      uvs[i * 2 + 1] = 0.5 + lz / 28.0;
+
+      // Perimeter vertices fade softly toward bank shoreline; interior gets deep teal tint
+      const sd = signedDistanceToPolygon(verts[i].x, verts[i].z, verts);
+      const t = Math.min(1, Math.max(0, -sd / 3.0));
+      colors[i * 4] = 0.28 * (1 - t) + 0.08 * t;
+      colors[i * 4 + 1] = 0.56 * (1 - t) + 0.30 * t;
+      colors[i * 4 + 2] = 0.60 * (1 - t) + 0.42 * t;
+      colors[i * 4 + 3] = 0.42 * (1 - t) + 0.94 * t;
+    }
+
+    // Note: triangle winding from earclipTriangulate2D is CCW in XZ -> swap 2nd & 3rd index per tri for +Y up in Babylon LH
+    const babylonIndices = new Uint32Array(tri.indices.length);
+    for (let k = 0; k + 2 < tri.indices.length; k += 3) {
+      babylonIndices[k] = tri.indices[k];
+      babylonIndices[k + 1] = tri.indices[k + 2];
+      babylonIndices[k + 2] = tri.indices[k + 1];
+    }
+
+    const vd = new VertexData();
+    vd.positions = positions;
+    vd.normals = normals;
+    vd.uvs = uvs;
+    vd.colors = colors;
+    vd.indices = babylonIndices;
+    vd.applyToMesh(water, false);
+
+    water.hasVertexAlpha = true;
+    water.position.set(centerX, rimElevation - 0.19, centerZ);
     water.material = this.matWater;
     water.receiveShadows = true;
     water.isPickable = true;

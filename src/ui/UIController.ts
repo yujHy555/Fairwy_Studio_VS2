@@ -14,6 +14,12 @@ import {
   FeatureSubMaterialOption,
   StampedFeatureRecord
 } from '../terrain/TerrainGrid';
+import {
+  LoadedMapNGSource,
+  decode16BitPng,
+  parseMapNGMetadata
+} from '../terrain/MapNGImporter';
+import { TraceToolMode } from '../terrain/FeatureTracer';
 
 export interface OutlinerItem {
   id: string;
@@ -121,6 +127,21 @@ export interface UIEventCallbacks {
   onGroundTextureUpload?: (slot: 'color' | 'roughness' | 'normal', dataUrl: string, fileName: string) => void;
   onUndo?: () => void;
   onRedo?: () => void;
+  onApplyMapNGImport?: (payload: {
+    source: LoadedMapNGSource;
+    cropCenterX: number;
+    cropCenterZ: number;
+    rotationDeg: number;
+    elevationScale: number;
+    clearFeatures: boolean;
+  }) => void;
+  onToggleSatelliteOverlay?: () => void;
+  onSatelliteOpacityChange?: (opacity: number) => void;
+  onTopDownTraceCam?: () => void;
+  onTraceModeChange?: (mode: TraceToolMode, surface: SurfaceType) => void;
+  onTraceFinish?: () => void;
+  onTraceCancel?: () => void;
+  onTraceUndoPoint?: () => void;
 }
 
 
@@ -272,6 +293,7 @@ export class UIController {
   private outlinerSearchQuery: string = '';
   private outlinerActiveCat: string = 'all';
   private activeHdriPresetId: string = 'limpopo_golf_course';
+  private activeTraceMode: TraceToolMode = 'off';
   public isSwingEnabled: boolean = true;
 
   // Performance HUD & Optimization Tips
@@ -521,6 +543,45 @@ export class UIController {
 
           <div class="preset-grid" id="preset-grid-container">
             <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <!-- MapNG Real-Course & Satellite Feature Tracing -->
+        <div class="mapng-tool-card" id="mapng-tracing-section">
+          <h4>🛰️ MapNG &amp; Satellite Tracing</h4>
+          <button id="btn-open-mapng-modal" class="btn btn-sm btn-block" style="background: rgba(14, 165, 233, 0.18); border-color: #38bdf8; color: #bae6fd; font-weight: 700; margin-bottom: 8px;">
+            🗺️ Import MapNG Course...
+          </button>
+
+          <div class="mapng-btn-row" style="margin-bottom: 6px;">
+            <button id="btn-toggle-satellite" class="btn btn-sm" title="Toggle Satellite Reference Overlay [T]">🛰️ Satellite [T]</button>
+            <button id="btn-topdown-trace-cam" class="btn btn-sm" title="Snap Top-Down Architect Camera for zero-parallax tracing">📐 Top-Down Cam</button>
+          </div>
+
+          <div class="slider-control" style="margin-bottom: 8px;">
+            <label>Satellite Opacity: <span id="val-satellite-opacity">0%</span></label>
+            <input type="range" id="input-satellite-opacity" min="0" max="100" step="1" value="0" />
+          </div>
+
+          <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px; font-weight: 600;">Trace Surface Contour:</div>
+          <select id="select-trace-surface" style="width: 100%; margin-bottom: 6px; padding: 5px 8px; border-radius: 6px; background: rgba(15,23,42,0.9); color: #e2e8f0; border: 1px solid rgba(56,189,248,0.35); font-size: 12px;">
+            <option value="bunker">🏖️ Bunker (Sand + Sod Lip)</option>
+            <option value="green">⛳ Putting Green (Keep DEM)</option>
+            <option value="fairway">🌿 Fairway</option>
+            <option value="tee">🏌️ Tee Box (2-Layer)</option>
+            <option value="water">💧 Water Hazard + 3D Surface</option>
+          </select>
+
+          <div class="mapng-btn-row">
+            <button id="btn-trace-spline" class="btn btn-sm" title="Click perimeter points on satellite photo">✏️ Trace Spline</button>
+            <button id="btn-trace-lasso" class="btn btn-sm" title="Hold LMB and draw freehand around shape">〰️ Lasso</button>
+          </div>
+          <div class="mapng-btn-row hidden" id="trace-active-actions" style="margin-top: 6px;">
+            <button id="btn-trace-finish" class="btn btn-sm" style="background: rgba(34, 197, 94, 0.25); border-color: #22c55e; color: #86efac;">✅ Finish [Enter]</button>
+            <button id="btn-trace-cancel" class="btn btn-sm" style="background: rgba(239, 68, 68, 0.22); border-color: #ef4444; color: #fca5a5;">✖ Cancel [Esc]</button>
+          </div>
+          <div id="trace-status-badge" class="trace-status-badge hidden">
+            Click points on terrain. Enter / click green start dot to close.
           </div>
         </div>
         </div>
@@ -1523,6 +1584,65 @@ export class UIController {
             <div id="tips-dots-container" class="tips-dots-container"></div>
           </div>
           <button id="btn-next-tip" class="btn btn-sm btn-tips-nav">Next ▶</button>
+        </div>
+      </div>
+
+      <!-- MapNG Real-Course Terrain Import Wizard Modal -->
+      <div id="modal-mapng-import" class="modal-overlay hidden">
+        <div class="mapng-modal-card">
+          <div class="mapng-modal-header">
+            <div>
+              <h3 style="margin: 0; font-size: 16px; color: #38bdf8;">🗺️ Import MapNG Course Bundle</h3>
+              <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Load 16-bit PNG heightmap, satellite ortho texture &amp; export report JSON/MD</div>
+            </div>
+            <button id="btn-close-mapng-modal" class="tips-modal-close" title="Close [Esc]">✕</button>
+          </div>
+
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 12px; font-weight: 700; color: #e2e8f0; margin-bottom: 6px;">
+              Select MapNG Files (multi-select <code style="color:#38bdf8;">heightmap_*.png</code>, <code style="color:#38bdf8;">texture_*.png</code>, <code style="color:#38bdf8;">export_report.json</code>):
+            </label>
+            <input type="file" id="input-mapng-files" multiple accept=".png,.jpg,.jpeg,.json,.md,.txt" style="width: 100%; padding: 8px; border-radius: 8px; background: rgba(15,23,42,0.85); border: 1px dashed rgba(56,189,248,0.5); color: #e2e8f0;" />
+          </div>
+
+          <div class="mapng-modal-grid">
+            <div>
+              <canvas id="canvas-mapng-crop" width="280" height="280" class="mapng-crop-canvas"></canvas>
+              <div style="font-size: 10px; color: #94a3b8; margin-top: 4px; text-align: center;">
+                Drag on preview to position 220m × 460m Active Hole Window
+              </div>
+            </div>
+            <div>
+              <div class="mapng-status-list">
+                <div id="mapng-status-hm" class="mapng-status-item">Heightmap (16-bit PNG): Not loaded</div>
+                <div id="mapng-status-sat" class="mapng-status-item">Satellite Ortho: Optional / Not loaded</div>
+                <div id="mapng-status-meta" class="mapng-status-item">Metadata JSON/MD: Defaults (0–78m)</div>
+              </div>
+
+              <div class="slider-control" style="margin-top: 10px;">
+                <label>Hole Window Heading: <span id="val-mapng-rotation">0°</span></label>
+                <input type="range" id="input-mapng-rotation" min="0" max="355" step="5" value="0" />
+              </div>
+
+              <div class="slider-control">
+                <label>Elevation Relief Scale: <span id="val-mapng-elev-scale">1.00x</span></label>
+                <input type="range" id="input-mapng-elev-scale" min="0.25" max="2.0" step="0.05" value="1.0" />
+              </div>
+
+              <div style="font-size: 11px; color: #cbd5e1; margin: 8px 0;">
+                Crop Center: <strong id="val-mapng-center">1024m, 1024m</strong>
+              </div>
+
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #e2e8f0; margin-bottom: 12px; cursor: pointer;">
+                <input type="checkbox" id="chk-mapng-clear-features" checked />
+                Clear procedural features &amp; start fresh for tracing
+              </label>
+
+              <button id="btn-apply-mapng" class="btn btn-primary btn-block" disabled style="padding: 9px 14px; font-weight: 800;">
+                ⚡ Apply MapNG Terrain
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3196,11 +3316,13 @@ export class UIController {
       this.setShotShape('fade');
     });
 
+    this.bindMapNGAndTracingEvents();
+
     // Keyboard Shortcuts
     window.addEventListener('keydown', (e) => {
       const targetTag = (e.target as HTMLElement | null)?.tagName;
       const isTextTyping =
-        (targetTag === 'INPUT' && (e.target as HTMLInputElement).type !== 'range' && (e.target as HTMLInputElement).type !== 'checkbox') ||
+        (targetTag === 'INPUT' && (e.target as HTMLInputElement).type !== 'range' && (e.target as HTMLInputElement).type !== 'checkbox' && (e.target as HTMLInputElement).type !== 'file') ||
         targetTag === 'TEXTAREA' ||
         targetTag === 'SELECT';
 
@@ -3229,6 +3351,17 @@ export class UIController {
 
       if (isTextTyping) return;
 
+      const mapngModal = document.getElementById('modal-mapng-import');
+      if (e.key === 'Escape' && mapngModal && !mapngModal.classList.contains('hidden')) {
+        mapngModal.classList.add('hidden');
+        return;
+      }
+
+      if (e.key === 'Escape' && this.currentMode === 'designer' && this.activeTraceMode !== 'off') {
+        this.callbacks.onTraceCancel?.();
+        return;
+      }
+
       if (e.key === 'Escape' && !this.isTipsModalOpen && !document.getElementById('modal-hole-complete')) {
         soundFx.playMenuSelect();
         this.showMainMenu();
@@ -3245,6 +3378,23 @@ export class UIController {
       }
 
       if (this.currentMode === 'designer') {
+        if (this.activeTraceMode !== 'off') {
+          if (e.key === 'Enter' || e.code === 'Space') {
+            e.preventDefault();
+            this.callbacks.onTraceFinish?.();
+            return;
+          } else if (e.code === 'Backspace') {
+            e.preventDefault();
+            this.callbacks.onTraceUndoPoint?.();
+            return;
+          }
+        }
+
+        if (e.code === 'KeyT') {
+          e.preventDefault();
+          this.callbacks.onToggleSatelliteOverlay?.();
+          return;
+        }
         if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey) {
           e.preventDefault();
           this.callbacks.onUndo?.();
@@ -5010,4 +5160,339 @@ export class UIController {
     }
   }
 
+  public updateSatelliteUi(enabled: boolean, opacity: number) {
+    const btn = document.getElementById('btn-toggle-satellite');
+    const slider = document.getElementById('input-satellite-opacity') as HTMLInputElement | null;
+    const label = document.getElementById('val-satellite-opacity');
+    const pct = Math.round(Math.max(0, Math.min(1, opacity)) * 100);
+    if (btn) btn.classList.toggle('mapng-trace-active', enabled && pct > 0);
+    if (slider) slider.value = String(pct);
+    if (label) label.innerText = enabled ? `${pct}%` : 'OFF';
+  }
+
+  public updateTraceUi(mode: TraceToolMode, surface: SurfaceType, pointCount: number) {
+    this.activeTraceMode = mode;
+    const btnSpline = document.getElementById('btn-trace-spline');
+    const btnLasso = document.getElementById('btn-trace-lasso');
+    const actionsRow = document.getElementById('trace-active-actions');
+    const badge = document.getElementById('trace-status-badge');
+    const sel = document.getElementById('select-trace-surface') as HTMLSelectElement | null;
+
+    if (btnSpline) btnSpline.classList.toggle('mapng-trace-active', mode === 'spline');
+    if (btnLasso) btnLasso.classList.toggle('mapng-trace-active', mode === 'freehand');
+    if (sel && mode !== 'off') {
+      sel.value =
+        surface === SurfaceType.GREEN ? 'green' :
+        surface === SurfaceType.FAIRWAY ? 'fairway' :
+        surface === SurfaceType.TEE ? 'tee' :
+        surface === SurfaceType.WATER ? 'water' : 'bunker';
+    }
+    if (actionsRow) actionsRow.classList.toggle('hidden', mode === 'off');
+    if (badge) {
+      badge.classList.toggle('hidden', mode === 'off');
+      const surfLabel = (SURFACE_PROPERTIES[surface]?.name || String(surface)).toUpperCase();
+      if (mode === 'spline') {
+        badge.innerText = `Spline (${surfLabel}): ${pointCount} pts placed. Click green start or press Enter to close.`;
+      } else if (mode === 'freehand') {
+        badge.innerText = `Lasso (${surfLabel}): Hold Left-Click and trace contour on satellite image.`;
+      }
+    }
+  }
+
+  private bindMapNGAndTracingEvents() {
+    const modal = document.getElementById('modal-mapng-import');
+    const btnOpen = document.getElementById('btn-open-mapng-modal');
+    const btnClose = document.getElementById('btn-close-mapng-modal');
+    const filesInput = document.getElementById('input-mapng-files') as HTMLInputElement | null;
+    const canvas = document.getElementById('canvas-mapng-crop') as HTMLCanvasElement | null;
+    const statusHm = document.getElementById('mapng-status-hm');
+    const statusSat = document.getElementById('mapng-status-sat');
+    const statusMeta = document.getElementById('mapng-status-meta');
+    const rotInput = document.getElementById('input-mapng-rotation') as HTMLInputElement | null;
+    const valRot = document.getElementById('val-mapng-rotation');
+    const elevScaleInput = document.getElementById('input-mapng-elev-scale') as HTMLInputElement | null;
+    const valElevScale = document.getElementById('val-mapng-elev-scale');
+    const valCenter = document.getElementById('val-mapng-center');
+    const chkClear = document.getElementById('chk-mapng-clear-features') as HTMLInputElement | null;
+    const btnApply = document.getElementById('btn-apply-mapng') as HTMLButtonElement | null;
+
+    let loadedSource: LoadedMapNGSource | null = null;
+    let hmPreviewCanvas: HTMLCanvasElement | null = null;
+    let cropCenterX = 1024;
+    let cropCenterZ = 1024;
+    let rotationDeg = 0;
+    let elevationScale = 1.0;
+
+    const drawCropPreview = () => {
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const cw = canvas.width;
+      const ch = canvas.height;
+      ctx.clearRect(0, 0, cw, ch);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, cw, ch);
+
+      const mpp = loadedSource?.meta.metersPerPixel || 1.0;
+      const spanW = (loadedSource?.heightmap.width || 2048) * mpp;
+      const spanH = (loadedSource?.heightmap.height || 2048) * mpp;
+
+      if (loadedSource?.satelliteImg) {
+        ctx.drawImage(loadedSource.satelliteImg, 0, 0, cw, ch);
+      } else if (hmPreviewCanvas) {
+        ctx.drawImage(hmPreviewCanvas, 0, 0, cw, ch);
+      }
+
+      const cxPx = (cropCenterX / spanW) * cw;
+      const cyPx = (cropCenterZ / spanH) * ch;
+      const boxW = (220 / spanW) * cw;
+      const boxH = (460 / spanH) * ch;
+      const rotRad = (rotationDeg * Math.PI) / 180;
+
+      ctx.save();
+      ctx.translate(cxPx, cyPx);
+      ctx.rotate(rotRad);
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-boxW * 0.5, -boxH * 0.5, boxW, boxH);
+      ctx.strokeRect(-boxW * 0.5, -boxH * 0.5, boxW, boxH);
+
+      // Green/North direction arrow inside crop box
+      ctx.strokeStyle = '#facc15';
+      ctx.beginPath();
+      ctx.moveTo(0, boxH * 0.35);
+      ctx.lineTo(0, -boxH * 0.38);
+      ctx.lineTo(-5, -boxH * 0.28);
+      ctx.moveTo(0, -boxH * 0.38);
+      ctx.lineTo(5, -boxH * 0.28);
+      ctx.stroke();
+      ctx.restore();
+
+      if (valCenter) valCenter.innerText = `${Math.round(cropCenterX)}m, ${Math.round(cropCenterZ)}m`;
+    };
+
+    const buildHmPreview = (src: LoadedMapNGSource) => {
+      const pCanvas = document.createElement('canvas');
+      const sz = 280;
+      pCanvas.width = sz;
+      pCanvas.height = sz;
+      const pCtx = pCanvas.getContext('2d');
+      if (!pCtx) return null;
+      const imgData = pCtx.createImageData(sz, sz);
+      const { width, height, pixels } = src.heightmap;
+      for (let py = 0; py < sz; py++) {
+        const sy = Math.min(height - 1, Math.floor((py / sz) * height));
+        for (let px = 0; px < sz; px++) {
+          const sx = Math.min(width - 1, Math.floor((px / sz) * width));
+          const v = pixels[sy * width + sx] >> 8;
+          const idx = (py * sz + px) * 4;
+          imgData.data[idx] = v;
+          imgData.data[idx + 1] = Math.min(255, Math.round(v * 1.1));
+          imgData.data[idx + 2] = v;
+          imgData.data[idx + 3] = 255;
+        }
+      }
+      pCtx.putImageData(imgData, 0, 0);
+      return pCanvas;
+    };
+
+    btnOpen?.addEventListener('click', () => {
+      modal?.classList.remove('hidden');
+      drawCropPreview();
+    });
+
+    btnClose?.addEventListener('click', () => {
+      modal?.classList.add('hidden');
+    });
+
+    filesInput?.addEventListener('change', async () => {
+      const files = Array.from(filesInput.files || []);
+      if (!files.length) return;
+
+      const metaTexts: { name: string; text: string }[] = [];
+      let hmFile: File | null = null;
+      let satFile: File | null = null;
+
+      for (const file of files) {
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith('.json') || lower.endsWith('.md') || lower.endsWith('.txt')) {
+          metaTexts.push({ name: file.name, text: await file.text() });
+        } else if (lower.includes('heightmap')) {
+          hmFile = file;
+        } else if (lower.includes('texture') || lower.includes('satellite') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+          satFile = file;
+        } else if (lower.endsWith('.png')) {
+          // Probe header bytes: PNG grayscale/16-bit vs JFIF/RGB satellite
+          const head = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+          const isPng = head[0] === 0x89 && head[1] === 0x50;
+          if (isPng && head[24] === 16) {
+            hmFile = file;
+          } else {
+            satFile = file;
+          }
+        }
+      }
+
+      if (!hmFile) {
+        this.showToast('Please include the 16-bit MapNG heightmap PNG file.', 'warning', 3200);
+        return;
+      }
+
+      try {
+        if (statusHm) {
+          statusHm.classList.remove('ready');
+          statusHm.innerText = `Decoding ${hmFile.name}...`;
+        }
+        const hmBuf = await hmFile.arrayBuffer();
+        const heightmap = await decode16BitPng(hmBuf);
+        const metaParsed = parseMapNGMetadata(metaTexts);
+
+        const mpp = metaParsed.metersPerPixel ?? 1.0;
+        const minH = metaParsed.minHeightMeters ?? 0;
+        const maxH = metaParsed.maxHeightMeters ?? 78;
+
+        let satImg: HTMLImageElement | null = null;
+        let satUrl: string | null = null;
+        if (satFile) {
+          satUrl = URL.createObjectURL(satFile);
+          satImg = await new Promise<HTMLImageElement | null>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => resolve(null);
+            img.src = satUrl!;
+          });
+        }
+
+        loadedSource = {
+          meta: {
+            levelName: metaParsed.levelName || hmFile.name.replace(/\.png$/i, ''),
+            sourceWidthPx: metaParsed.sourceWidthPx || heightmap.width,
+            sourceHeightPx: metaParsed.sourceHeightPx || heightmap.height,
+            metersPerPixel: mpp,
+            minHeightMeters: minH,
+            maxHeightMeters: maxH,
+            centerLat: metaParsed.centerLat,
+            centerLon: metaParsed.centerLon
+          },
+          heightmap,
+          satelliteImg: satImg,
+          satelliteUrl: satUrl
+        };
+
+        hmPreviewCanvas = buildHmPreview(loadedSource);
+        cropCenterX = Math.round(heightmap.width * mpp * 0.5);
+        cropCenterZ = Math.round(heightmap.height * mpp * 0.5);
+
+        if (statusHm) {
+          statusHm.classList.add('ready');
+          statusHm.innerText = `✅ Heightmap: ${heightmap.width}×${heightmap.height} (${heightmap.bitDepth}-bit PNG)`;
+        }
+        if (statusSat) {
+          statusSat.classList.toggle('ready', Boolean(satImg));
+          statusSat.innerText = satImg
+            ? `✅ Satellite Ortho: ${satImg.width}×${satImg.height} loaded`
+            : '⚠️ No satellite texture attached (grayscale DEM only)';
+        }
+        if (statusMeta) {
+          statusMeta.classList.toggle('ready', metaTexts.length > 0);
+          statusMeta.innerText = `${metaTexts.length > 0 ? '✅' : 'ℹ️'} ${loadedSource.meta.levelName} (${minH.toFixed(1)}m – ${maxH.toFixed(1)}m)`;
+        }
+        if (btnApply) btnApply.disabled = false;
+        drawCropPreview();
+      } catch (err: any) {
+        console.error('MapNG decode error:', err);
+        this.showToast(`MapNG Import Error: ${err?.message || 'Failed to decode PNG'}`, 'penalty', 4000);
+      }
+    });
+
+    let isDraggingCrop = false;
+    const updateCropFromPointer = (clientX: number, clientY: number) => {
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+      const mpp = loadedSource?.meta.metersPerPixel || 1.0;
+      const spanW = (loadedSource?.heightmap.width || 2048) * mpp;
+      const spanH = (loadedSource?.heightmap.height || 2048) * mpp;
+      cropCenterX = Math.max(115, Math.min(spanW - 115, nx * spanW));
+      cropCenterZ = Math.max(235, Math.min(spanH - 235, ny * spanH));
+      drawCropPreview();
+    };
+    canvas?.addEventListener('pointerdown', (e) => {
+      isDraggingCrop = true;
+      updateCropFromPointer(e.clientX, e.clientY);
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (isDraggingCrop) updateCropFromPointer(e.clientX, e.clientY);
+    });
+    window.addEventListener('pointerup', () => {
+      isDraggingCrop = false;
+    });
+
+    rotInput?.addEventListener('input', () => {
+      rotationDeg = Number(rotInput.value);
+      if (valRot) valRot.innerText = `${rotationDeg}°`;
+      drawCropPreview();
+    });
+    elevScaleInput?.addEventListener('input', () => {
+      elevationScale = Number(elevScaleInput.value);
+      if (valElevScale) valElevScale.innerText = `${elevationScale.toFixed(2)}x`;
+    });
+
+    btnApply?.addEventListener('click', () => {
+      if (!loadedSource) return;
+      modal?.classList.add('hidden');
+      this.callbacks.onApplyMapNGImport?.({
+        source: loadedSource,
+        cropCenterX,
+        cropCenterZ,
+        rotationDeg,
+        elevationScale,
+        clearFeatures: chkClear ? chkClear.checked : true
+      });
+    });
+
+    // Designer Panel Satellite & Tracing buttons
+    document.getElementById('btn-toggle-satellite')?.addEventListener('click', () => {
+      this.callbacks.onToggleSatelliteOverlay?.();
+    });
+    document.getElementById('btn-topdown-trace-cam')?.addEventListener('click', () => {
+      this.callbacks.onTopDownTraceCam?.();
+    });
+    document.getElementById('input-satellite-opacity')?.addEventListener('input', (e) => {
+      const pct = Number((e.target as HTMLInputElement).value);
+      this.callbacks.onSatelliteOpacityChange?.(pct / 100);
+    });
+
+    const getTraceSurf = (): SurfaceType => {
+      const sel = document.getElementById('select-trace-surface') as HTMLSelectElement | null;
+      switch (sel?.value) {
+        case 'green': return SurfaceType.GREEN;
+        case 'fairway': return SurfaceType.FAIRWAY;
+        case 'tee': return SurfaceType.TEE;
+        case 'water': return SurfaceType.WATER;
+        default: return SurfaceType.BUNKER;
+      }
+    };
+    document.getElementById('select-trace-surface')?.addEventListener('change', () => {
+      if (this.activeTraceMode !== 'off') {
+        this.callbacks.onTraceModeChange?.(this.activeTraceMode, getTraceSurf());
+      }
+    });
+    document.getElementById('btn-trace-spline')?.addEventListener('click', () => {
+      const next: TraceToolMode = this.activeTraceMode === 'spline' ? 'off' : 'spline';
+      this.callbacks.onTraceModeChange?.(next, getTraceSurf());
+    });
+    document.getElementById('btn-trace-lasso')?.addEventListener('click', () => {
+      const next: TraceToolMode = this.activeTraceMode === 'freehand' ? 'off' : 'freehand';
+      this.callbacks.onTraceModeChange?.(next, getTraceSurf());
+    });
+    document.getElementById('btn-trace-finish')?.addEventListener('click', () => {
+      this.callbacks.onTraceFinish?.();
+    });
+    document.getElementById('btn-trace-cancel')?.addEventListener('click', () => {
+      this.callbacks.onTraceCancel?.();
+    });
+  }
 }

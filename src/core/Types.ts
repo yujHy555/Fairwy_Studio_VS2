@@ -33,7 +33,23 @@ export interface PresetFeature {
   depthProfile?: number; // negative for depressions (bunkers: -0.8m, water: -1.8m), positive for elevated tees/greens
   lipHeight?: number;    // bunker lip elevation
   bunkerShapeIndex?: number; // variant shape index (0..4)
+  contour?: Vector2D[]; // optional closed perimeter contour in local or world meters for traced MapNG features
+  conformDemBlend?: number; // 0..1: blend between flattened pad and underlying MapNG DEM
   sceneryType?: 'pine' | 'hero_tree' | 'woodland_tree' | 'oak' | 'rock_cluster' | 'distance_marker' | 'dam_wall';
+}
+
+export interface MapNGCourseMeta {
+  levelName: string;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  metersPerPixel: number;
+  minHeightMeters: number;
+  maxHeightMeters: number;
+  centerLat?: number;
+  centerLon?: number;
+  cropOriginX?: number;
+  cropOriginZ?: number;
+  cropRotationRad?: number;
 }
 
 export interface PlacedFeature {
@@ -82,6 +98,7 @@ export interface GolfCourseData {
   heightMap: number[]; // Flattened Float32 or 1D array of elevations
   surfaceMap: number[]; // Flattened array of SurfaceType
   environmentSettings?: EnvironmentSettings;
+  mapngMeta?: MapNGCourseMeta;
 }
 
 export interface ClubSpec {

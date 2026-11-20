@@ -1026,14 +1026,18 @@ export class CourseManager {
                   }
                 }
                 const rimElev = wf?.baseElevation ?? (py + 0.19);
-                existing = this.scenery.createWaterPlane(
-                  px,
-                  rimElev,
-                  pz,
-                  wf?.width ?? 24,
-                  wf?.length ?? 42,
-                  wf?.rotationRad ?? -rotY
-                );
+                if (wf?.contour && wf.contour.length >= 3) {
+                  existing = this.scenery.createPolygonWaterPlane(wf.contour, rimElev, wf.centerX, wf.centerZ);
+                } else {
+                  existing = this.scenery.createWaterPlane(
+                    px,
+                    rimElev,
+                    pz,
+                    wf?.width ?? 24,
+                    wf?.length ?? 42,
+                    wf?.rotationRad ?? -rotY
+                  );
+                }
                 if (wf && existing) {
                   (wf as any)._waterMesh = existing;
                 }
@@ -1069,7 +1073,10 @@ export class CourseManager {
             );
             if (!hasMesh) {
               const rimElev = f.baseElevation ?? this.terrain.getBaseElevation(f.centerX, f.centerZ);
-              const wm = this.scenery.createWaterPlane(f.centerX, rimElev, f.centerZ, f.width, f.length, f.rotationRad);
+              const wm =
+                f.contour && f.contour.length >= 3
+                  ? this.scenery.createPolygonWaterPlane(f.contour, rimElev, f.centerX, f.centerZ)
+                  : this.scenery.createWaterPlane(f.centerX, rimElev, f.centerZ, f.width, f.length, f.rotationRad);
               (f as any)._waterMesh = wm;
               this.sceneryMeshes.push(wm);
             }
@@ -1140,5 +1147,44 @@ export class CourseManager {
 
   public getEnvironmentSettings(): EnvironmentSettings | undefined {
     return this.courseData.environmentSettings;
+  }
+
+  public refreshWaterMeshes(): void {
+    if (!this.terrain) return;
+    const activeWater = this.terrain.stampedFeatures.filter((f) => f.surfaceType === SurfaceType.WATER);
+    const keepSet = new Set<Mesh>();
+
+    for (const wf of activeWater) {
+      let existing = (wf as any)._waterMesh as Mesh | undefined;
+      if (existing && !existing.isDisposed() && wf.contour && wf.contour.length >= 3) {
+        // Re-create traced polygon water mesh on contour edits so shape updates cleanly
+        existing.dispose();
+        const idx = this.sceneryMeshes.indexOf(existing);
+        if (idx >= 0) this.sceneryMeshes.splice(idx, 1);
+        existing = undefined;
+      }
+      if (!existing || existing.isDisposed()) {
+        const rimElev = wf.baseElevation ?? this.terrain.getBaseElevation(wf.centerX, wf.centerZ);
+        existing =
+          wf.contour && wf.contour.length >= 3
+            ? this.scenery.createPolygonWaterPlane(wf.contour, rimElev, wf.centerX, wf.centerZ)
+            : this.scenery.createWaterPlane(wf.centerX, rimElev, wf.centerZ, wf.width, wf.length, wf.rotationRad);
+        (wf as any)._waterMesh = existing;
+        this.sceneryMeshes.push(existing);
+      }
+      keepSet.add(existing);
+    }
+
+    for (let i = this.sceneryMeshes.length - 1; i >= 0; i--) {
+      const m = this.sceneryMeshes[i];
+      if (!m || m.isDisposed()) {
+        this.sceneryMeshes.splice(i, 1);
+        continue;
+      }
+      if ((m.name || '').toLowerCase().startsWith('water') && !keepSet.has(m as Mesh)) {
+        m.dispose();
+        this.sceneryMeshes.splice(i, 1);
+      }
+    }
   }
 }

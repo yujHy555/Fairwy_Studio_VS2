@@ -4150,4 +4150,117 @@ body.in-designer-mode #club-card-putter {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.8), 0 0 16px rgba(56, 189, 248, 0.4);
 }
 
+/* ==========================================================================
+   MapNG Importer & Satellite Tracing UI
+   ========================================================================== */
+.mapng-tool-card {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  border-radius: 8px;
+}
+
+.mapng-tool-card h4 {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #38bdf8;
+}
+
+.mapng-btn-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mapng-btn-row .btn {
+  flex: 1 1 auto;
+}
+
+.mapng-trace-active {
+  background: linear-gradient(135deg, #0284c7, #0ea5e9) !important;
+  border-color: #38bdf8 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45);
+}
+
+.trace-status-badge {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: rgba(2, 132, 199, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.30);
+  color: #bae6fd;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.mapng-modal-card {
+  width: 620px;
+  max-width: 94vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: linear-gradient(165deg, rgba(11, 20, 34, 0.98), rgba(7, 13, 22, 0.99));
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  border-radius: 16px;
+  padding: 20px 24px;
+  color: #f1f5f9;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.8);
+}
+
+.mapng-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mapng-modal-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 680px) {
+  .mapng-modal-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mapng-crop-canvas {
+  width: 280px;
+  height: 280px;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: #0b1320;
+  cursor: crosshair;
+}
+
+.mapng-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.mapng-status-item {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #94a3b8;
+}
+
+.mapng-status-item.ready {
+  border-color: rgba(52, 211, 153, 0.5);
+  color: #6ee7b7;
+  background: rgba(6, 78, 59, 0.28);
+}
+
 

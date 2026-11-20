@@ -22,6 +22,12 @@ import { GOLF_CONSTANTS, SurfaceType } from '../core/Constants';
 import { getDeviceProfile } from '../core/DeviceProfile';
 import { Vector3D } from '../core/Types';
 import { RealisticTextures } from './RealisticTextures';
+import {
+  PolygonPoint,
+  computePolygonBounds,
+  pointInPolygon,
+  signedDistanceToPolygon
+} from './PolygonMath';
 
 /**
  * Patch Babylon.js bump shaders to guarantee stable TBN frame and clean normal mapping.
@@ -132,6 +138,17 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
   public featColorTex: BaseTexture | null = null;
   public featNormalTex: BaseTexture | null = null;
   public featRoughTex: BaseTexture | null = null;
+  public satelliteOverlayTex: BaseTexture | null = null;
+  public tracedSdfTex: BaseTexture | null = null;
+
+  public satelliteOpacity: number = 0.0;
+  public satelliteEnabled: boolean = false;
+  public overlayOverFeatures: number = 0.0;
+  public tracedCount: number = 0;
+  public tracedSurfIds: [number, number, number, number] = [0, 0, 0, 0];
+  public tracedFringeIds: [number, number, number, number] = [0, 0, 0, 0];
+  public tracedCollarW: [number, number, number, number] = [1.8, 1.65, 1.2, 2.15];
+  public tracedShowCollar: [number, number, number, number] = [1, 1, 1, 1];
 
   public groundBaseColor: Color3 = Color3.FromHexString('#4c7426');
   public groundColorTexLevel: number = 1.0;
@@ -186,7 +203,9 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
       'waterBedColorSampler',
       'featColorSampler',
       'featNormalSampler',
-      'featRoughSampler'
+      'featRoughSampler',
+      'satelliteOverlaySampler',
+      'tracedSdfSampler'
     );
   }
 
@@ -200,6 +219,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
     if (this.featColorTex) activeTextures.push(this.featColorTex);
     if (this.featNormalTex) activeTextures.push(this.featNormalTex);
     if (this.featRoughTex) activeTextures.push(this.featRoughTex);
+    if (this.satelliteOverlayTex) activeTextures.push(this.satelliteOverlayTex);
+    if (this.tracedSdfTex) activeTextures.push(this.tracedSdfTex);
   }
 
   hasTexture(texture: BaseTexture): boolean {
@@ -212,7 +233,9 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
       this.waterBedColorTex === texture ||
       this.featColorTex === texture ||
       this.featNormalTex === texture ||
-      this.featRoughTex === texture
+      this.featRoughTex === texture ||
+      this.satelliteOverlayTex === texture ||
+      this.tracedSdfTex === texture
     );
   }
 
@@ -238,7 +261,13 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
         { name: 'uTees', size: 4, type: 'vec4', arraySize: 4 },
         { name: 'uTeeRotCollar', size: 4, type: 'vec4', arraySize: 4 },
         { name: 'uTeeIds', size: 4, type: 'vec4', arraySize: 4 },
-        { name: 'uTeeStripes', size: 4, type: 'vec4', arraySize: 4 }
+        { name: 'uTeeStripes', size: 4, type: 'vec4', arraySize: 4 },
+        { name: 'uSatelliteParams', size: 4, type: 'vec4' },
+        { name: 'uTracedMeta', size: 4, type: 'vec4' },
+        { name: 'uTracedSurfIds', size: 4, type: 'vec4' },
+        { name: 'uTracedFringeIds', size: 4, type: 'vec4' },
+        { name: 'uTracedCollarW', size: 4, type: 'vec4' },
+        { name: 'uTracedShowCollar', size: 4, type: 'vec4' }
       ]
     };
   }
@@ -337,6 +366,49 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
     const fRoughTex = this.pickReadyTex(this.featRoughTex, this.fallbackSplatTex);
     if (fRoughTex) uniformBuffer.setTexture('featRoughSampler', fRoughTex);
+
+    uniformBuffer.updateFloat4(
+      'uSatelliteParams',
+      this.satelliteOpacity,
+      this.satelliteEnabled && this.satelliteOverlayTex?.isReady() ? 1.0 : 0.0,
+      this.overlayOverFeatures,
+      0.0
+    );
+    uniformBuffer.updateFloat4('uTracedMeta', this.tracedCount, 16.0, 0.0, 0.0);
+    uniformBuffer.updateFloat4(
+      'uTracedSurfIds',
+      this.tracedSurfIds[0],
+      this.tracedSurfIds[1],
+      this.tracedSurfIds[2],
+      this.tracedSurfIds[3]
+    );
+    uniformBuffer.updateFloat4(
+      'uTracedFringeIds',
+      this.tracedFringeIds[0],
+      this.tracedFringeIds[1],
+      this.tracedFringeIds[2],
+      this.tracedFringeIds[3]
+    );
+    uniformBuffer.updateFloat4(
+      'uTracedCollarW',
+      this.tracedCollarW[0],
+      this.tracedCollarW[1],
+      this.tracedCollarW[2],
+      this.tracedCollarW[3]
+    );
+    uniformBuffer.updateFloat4(
+      'uTracedShowCollar',
+      this.tracedShowCollar[0],
+      this.tracedShowCollar[1],
+      this.tracedShowCollar[2],
+      this.tracedShowCollar[3]
+    );
+
+    const satTex = this.pickReadyTex(this.satelliteOverlayTex, this.fallbackSplatTex);
+    if (satTex) uniformBuffer.setTexture('satelliteOverlaySampler', satTex);
+
+    const tSdfTex = this.pickReadyTex(this.tracedSdfTex, this.fallbackSplatTex);
+    if (tSdfTex) uniformBuffer.setTexture('tracedSdfSampler', tSdfTex);
   }
 
   getCustomCode(shaderType: string) {
@@ -369,6 +441,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             uniform sampler2D featColorSampler;
             uniform sampler2D featNormalSampler;
             uniform sampler2D featRoughSampler;
+            uniform sampler2D satelliteOverlaySampler;
+            uniform sampler2D tracedSdfSampler;
             varying vec2 vGroundColorUV;
             varying vec2 vRawTerrainUV;
 
@@ -776,6 +850,78 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 }
               }
             }
+
+            void applyTracedLayerCol(
+              float dVal,
+              float surfLid,
+              float fringeLid,
+              float collarW,
+              float showCol,
+              vec2 baseUv,
+              mat3 tbn,
+              vec3 geomN,
+              float slopeSafe,
+              vec3 vTint,
+              inout vec3 ioCol,
+              inout vec3 ioNorm
+            ) {
+              if (surfLid < 0.5 || dVal > collarW + 0.35) return;
+              float coreW = 1.0 - smoothstep(-0.09, 0.09, dVal);
+              float effColW = showCol > 0.5 ? max(0.20, collarW) : 0.0;
+              float totW = effColW > 0.05
+                ? (1.0 - smoothstep(effColW - 0.12, effColW + 0.16, dVal))
+                : coreW;
+              if (totW <= 0.001) return;
+
+              vec3 sTex; float sMix; vec3 sNorm; float sR; float sM; vec3 sBase;
+              evalSingleLayer(surfLid, baseUv, tbn, geomN, slopeSafe, sTex, sMix, sNorm, sR, sM, sBase);
+              vec3 sCol = mix(sBase, sTex, sMix) * vTint;
+
+              if (effColW > 0.05 && fringeLid > 0.5) {
+                vec3 fTex; float fMix; vec3 fNorm; float fR; float fM; vec3 fBase;
+                evalSingleLayer(fringeLid, baseUv, tbn, geomN, slopeSafe, fTex, fMix, fNorm, fR, fM, fBase);
+                vec3 fCol = mix(fBase, fTex, fMix) * vTint;
+                vec3 compCol = mix(fCol, sCol, coreW);
+                vec3 compNorm = normalize(mix(fNorm, sNorm, coreW));
+                ioCol = mix(ioCol, compCol, totW);
+                ioNorm = normalize(mix(ioNorm, compNorm, totW));
+              } else {
+                ioCol = mix(ioCol, sCol, totW);
+                ioNorm = normalize(mix(ioNorm, sNorm, totW));
+              }
+            }
+
+            void applyTracedLayerRough(
+              float dVal,
+              float surfLid,
+              float fringeLid,
+              float collarW,
+              float showCol,
+              vec2 baseUv,
+              inout float ioRough,
+              inout float ioMet
+            ) {
+              if (surfLid < 0.5 || dVal > collarW + 0.35) return;
+              float coreW = 1.0 - smoothstep(-0.09, 0.09, dVal);
+              float effColW = showCol > 0.5 ? max(0.20, collarW) : 0.0;
+              float totW = effColW > 0.05
+                ? (1.0 - smoothstep(effColW - 0.12, effColW + 0.16, dVal))
+                : coreW;
+              if (totW <= 0.001) return;
+
+              vec3 uC; float uM; vec3 uN; vec3 uB;
+              float sR; float sM;
+              evalSingleLayer(surfLid, baseUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, uC, uM, uN, sR, sM, uB);
+              if (effColW > 0.05 && fringeLid > 0.5) {
+                float fR; float fM;
+                evalSingleLayer(fringeLid, baseUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, uC, uM, uN, fR, fM, uB);
+                ioRough = mix(ioRough, mix(fR, sR, coreW), totW);
+                ioMet = mix(ioMet, mix(fM, sM, coreW), totW);
+              } else {
+                ioRough = mix(ioRough, sR, totW);
+                ioMet = mix(ioMet, sM, totW);
+              }
+            }
           #endif
         `,
         // PBR & Standard diffuse/albedo & normal hook
@@ -799,8 +945,22 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               : uGroundColorParams.rgb;
             vec3 mainGroundColor = mix(uGroundColorParams.rgb, gTexRgb, clamp(uGroundColorParams.a, 0.0, 1.0));
             #if defined(VERTEXCOLOR) || defined(VERTEXALPHA)
-              mainGroundColor *= vColor.rgb;
+              vec3 vertTint = vColor.rgb;
+              mainGroundColor *= vertTint;
+            #else
+              vec3 vertTint = vec3(1.0);
             #endif
+
+            vec3 satOverlayCol = mainGroundColor;
+            float hasSat = (uSatelliteParams.y > 0.5 && uSatelliteParams.x > 0.001) ? 1.0 : 0.0;
+            if (hasSat > 0.5) {
+              satOverlayCol = texture2D(satelliteOverlaySampler, vRawTerrainUV).rgb * vertTint;
+              mainGroundColor = mix(mainGroundColor, satOverlayCol, clamp(uSatelliteParams.x, 0.0, 1.0));
+            }
+
+            vec4 dTraced = (uTracedMeta.x > 0.5)
+              ? (texture2D(tracedSdfSampler, vRawTerrainUV) * 32.0 - 16.0)
+              : vec4(16.0);
 
             // 3. 2x2 sub-texel filter on 1024x1024 surfaceMaskSampler (water masks + crisp integer layerIds for Fairways)
             float mRes = 1024.0;
@@ -884,6 +1044,24 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
             vec3 hostTerrainColor = mix(mainGroundColor, featureColor, featureBlend);
             vec3 hostNormal = normalize(mix(groundN, layerNorm, featureBlend));
+
+            // Layer 0a-traced: Traced MapNG Fairways (RGBA8 linear-filtered GPU SDF)
+            if (uTracedMeta.x > 0.5 && uTracedSurfIds.x > 0.5) {
+              applyTracedLayerCol(
+                dTraced.r,
+                uTracedSurfIds.x,
+                uTracedFringeIds.x,
+                uTracedCollarW.x,
+                uTracedShowCollar.x,
+                vRawTerrainUV,
+                terrainTBN,
+                geomN,
+                slopeSafe,
+                vertTint,
+                hostTerrainColor,
+                hostNormal
+              );
+            }
 
             // Layer 0b: Analytical SDF Tee Boxes (2-Component: Tee Box Turf + optional Tee Collar / Fringe + mowing stripes)
             float tTotalWeight;
@@ -1015,6 +1193,23 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               }
             }
 
+            if (uTracedMeta.x > 0.5 && uTracedSurfIds.y > 0.5) {
+              applyTracedLayerCol(
+                dTraced.g,
+                uTracedSurfIds.y,
+                uTracedFringeIds.y,
+                uTracedCollarW.y,
+                uTracedShowCollar.y,
+                vRawTerrainUV,
+                terrainTBN,
+                geomN,
+                slopeSafe,
+                vertTint,
+                hostTerrainColor,
+                hostNormal
+              );
+            }
+
             // Layer 2: Analytical SDF evaluation for Water Hazards (2-Component: Shoreline & Bank + optional Bank Collar)
             float wTotalW;
             float wBedShoreW;
@@ -1060,6 +1255,23 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               }
             }
 
+            if (uTracedMeta.x > 0.5 && uTracedSurfIds.w > 0.5) {
+              applyTracedLayerCol(
+                dTraced.a,
+                uTracedSurfIds.w,
+                uTracedFringeIds.w,
+                uTracedCollarW.w,
+                uTracedShowCollar.w,
+                vRawTerrainUV,
+                terrainTBN,
+                geomN,
+                slopeSafe,
+                vertTint,
+                hostTerrainColor,
+                hostNormal
+              );
+            }
+
             // Layer 3: Analytical SDF evaluation for tournament bunkers (overlays Greens, Fairways, Water, Rough seamlessly)
             float bestSandWeight;
             float bestBunkerWeight;
@@ -1096,6 +1308,27 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 finalAlbedo = mix(hostTerrainColor, sCol, bestBunkerWeight);
                 finalNormal = normalize(mix(hostNormal, sNorm, bestBunkerWeight));
               }
+            }
+
+            if (uTracedMeta.x > 0.5 && uTracedSurfIds.z > 0.5) {
+              applyTracedLayerCol(
+                dTraced.b,
+                uTracedSurfIds.z,
+                uTracedFringeIds.z,
+                uTracedCollarW.z,
+                uTracedShowCollar.z,
+                vRawTerrainUV,
+                terrainTBN,
+                geomN,
+                slopeSafe,
+                vertTint,
+                finalAlbedo,
+                finalNormal
+              );
+            }
+
+            if (hasSat > 0.5 && uSatelliteParams.z > 0.01) {
+              finalAlbedo = mix(finalAlbedo, satOverlayCol, clamp(uSatelliteParams.z * uSatelliteParams.x, 0.0, 0.75));
             }
 
             #if defined(ALBEDO)
@@ -1173,6 +1406,13 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               float gEffMetallic = clamp(uGroundRoughParams.w, 0.0, 1.0);
               hostMet = mix(gEffMetallic, layerMetallic, spFeatBlend);
             #endif
+
+            vec4 dTracedSp = (uTracedMeta.x > 0.5)
+              ? (texture2D(tracedSdfSampler, vRawTerrainUV) * 32.0 - 16.0)
+              : vec4(16.0);
+            if (uTracedMeta.x > 0.5 && uTracedSurfIds.x > 0.5) {
+              applyTracedLayerRough(dTracedSp.r, uTracedSurfIds.x, uTracedFringeIds.x, uTracedCollarW.x, uTracedShowCollar.x, vRawTerrainUV, hostRough, hostMet);
+            }
 
             // Layer 0b: Analytical Tee Box roughness & metallic
             float spTTotalW; float spTWeight;
@@ -1260,6 +1500,15 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               }
             }
 
+            if (uTracedMeta.x > 0.5) {
+              if (uTracedSurfIds.y > 0.5) {
+                applyTracedLayerRough(dTracedSp.g, uTracedSurfIds.y, uTracedFringeIds.y, uTracedCollarW.y, uTracedShowCollar.y, vRawTerrainUV, hostRough, hostMet);
+              }
+              if (uTracedSurfIds.w > 0.5) {
+                applyTracedLayerRough(dTracedSp.a, uTracedSurfIds.w, uTracedFringeIds.w, uTracedCollarW.w, uTracedShowCollar.w, vRawTerrainUV, hostRough, hostMet);
+              }
+            }
+
             // Layer 3: Analytical Bunker roughness & metallic
             float spBestSandWeight;
             float spBestBunkerWeight;
@@ -1288,6 +1537,10 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 finalRough = mix(hostRough, sandRoughVal, spBestBunkerWeight);
                 finalMet   = mix(hostMet, sandMetVal, spBestBunkerWeight);
               }
+            }
+
+            if (uTracedMeta.x > 0.5 && uTracedSurfIds.z > 0.5) {
+              applyTracedLayerRough(dTracedSp.b, uTracedSurfIds.z, uTracedFringeIds.z, uTracedCollarW.z, uTracedShowCollar.z, vRawTerrainUV, finalRough, finalMet);
             }
 
             metallicRoughness.g = clamp(finalRough, 0.04, 1.0);
@@ -1511,6 +1764,8 @@ export interface StampedFeatureRecord {
   isKidney?: boolean;
   bunkerShapeIndex?: number;
   doglegPoints?: DoglegWaypoint[];
+  contour?: PolygonPoint[];
+  conformDemBlend?: number;
 }
 
 export class TerrainGrid {
@@ -1603,6 +1858,14 @@ export class TerrainGrid {
   private cachedBaseCourseSurfaceTypes: Uint8Array | null = null;
   public isBaseCourseDirty: boolean = true;
   private cachedRoughAvgColor: { r: number; g: number; b: number } | null = null;
+
+  public satelliteOverlayTex: Texture | null = null;
+  public satelliteOpacity: number = 0.0;
+  public satelliteEnabled: boolean = false;
+  public overlayOverFeatures: number = 0.0;
+  public tracedSdfTex: RawTexture | null = null;
+  private tracedSdfData: Uint8Array | null = null;
+  private hasAnyTracedSdf: boolean = false;
 
   /**
    * Monotonic specular curve: 0 = 0% (pure matte black specular),
@@ -1859,6 +2122,97 @@ export class TerrainGrid {
     let h = this.getBaseElevation(worldX, worldZ);
 
     for (const feat of this.stampedFeatures) {
+      if (feat.contour && feat.contour.length >= 3) {
+        const halfW = Math.max(2.0, feat.width * 0.5);
+        const halfL = Math.max(2.0, feat.length * 0.5);
+        const pad = 5.5;
+        if (
+          Math.abs(worldX - feat.centerX) > halfW + pad ||
+          Math.abs(worldZ - feat.centerZ) > halfL + pad
+        ) {
+          continue;
+        }
+        const d = signedDistanceToPolygon(worldX, worldZ, feat.contour);
+
+        if (feat.surfaceType === SurfaceType.TEE) {
+          if (d < 3.2) {
+            const liftHeight = Math.max(0.85, Math.min(2.2, feat.depthProfile || 1.25));
+            const topY = (feat.baseElevation ?? h) + liftHeight;
+            if (d <= 0.15) {
+              h = topY;
+            } else {
+              const t = (d - 0.15) / 3.05;
+              const smoothBank = 0.5 * (1.0 + Math.cos(t * Math.PI));
+              h = h * (1.0 - smoothBank) + topY * smoothBank;
+            }
+          }
+        } else if (feat.surfaceType === SurfaceType.BUNKER) {
+          const fringeMat = feat.subMaterials?.['fringe'] || feat.materialSettings;
+          const showCollar = fringeMat?.showCollarRings !== false && feat.materialSettings?.showCollarRings !== false;
+          const lipWidth = showCollar ? Math.max(0.20, fringeMat?.collarWidth ?? feat.materialSettings?.collarWidth ?? 1.20) : 0.0;
+          const blendWidth = 1.40;
+          const maxReach = lipWidth + blendWidth;
+          if (d < maxReach) {
+            const depth = Math.max(0.45, Math.min(0.85, Math.abs(feat.depthProfile || 0.60)));
+            const localGroundY = h;
+            const baseElev = feat.baseElevation ?? this.getBaseElevation(feat.centerX, feat.centerZ);
+            const swT = Math.max(0, Math.min(1, (d + 3.0) / (maxReach + 3.0)));
+            const slopeWeight = 0.70 * (swT * swT * (3.0 - 2.0 * swT));
+            const effectiveBaseY = baseElev * (1.0 - slopeWeight) + localGroundY * slopeWeight;
+            const sandFloorY = effectiveBaseY - depth;
+            const sandEdgeY = effectiveBaseY - depth * 0.18;
+
+            if (d <= 0.0) {
+              const depthFrac = Math.min(1.0, -d / 2.2);
+              const sFloor = 0.5 * (1.0 - Math.cos(depthFrac * Math.PI));
+              h = sandEdgeY * (1.0 - sFloor) + sandFloorY * sFloor;
+            } else if (showCollar && lipWidth > 0.05) {
+              const lipRise = Math.max(0.08, Math.min(0.14, (feat.lipHeight ?? 0.60) * 0.14));
+              const lipCrestY = localGroundY + lipRise;
+              if (d <= lipWidth) {
+                const tLip = d / lipWidth;
+                const sLip = 0.5 * (1.0 - Math.cos(tLip * Math.PI));
+                h = sandEdgeY * (1.0 - sLip) + lipCrestY * sLip;
+              } else {
+                const tBlend = (d - lipWidth) / blendWidth;
+                const sBlend = 0.5 * (1.0 + Math.cos(tBlend * Math.PI));
+                h = localGroundY * (1.0 - sBlend) + lipCrestY * sBlend;
+              }
+            } else {
+              const tBlend = d / blendWidth;
+              const sBlend = 0.5 * (1.0 - Math.cos(tBlend * Math.PI));
+              h = sandEdgeY * (1.0 - sBlend) + localGroundY * sBlend;
+            }
+          }
+        } else if (feat.surfaceType === SurfaceType.WATER) {
+          if (d < 2.8) {
+            const rimY = (feat.baseElevation ?? h) + 0.06;
+            const waterSurfaceY = (feat.baseElevation ?? h) - 0.20;
+            const effDepth = Math.min(-1.6, feat.depthProfile || -2.2);
+            if (d <= 0.0) {
+              const basinFrac = Math.min(1.0, -d / 5.5);
+              h = waterSurfaceY + effDepth * Math.sin(basinFrac * Math.PI * 0.5);
+            } else if (d <= 0.75) {
+              const t = d / 0.75;
+              const sCurve = 0.5 * (1.0 - Math.cos(t * Math.PI));
+              h = waterSurfaceY * (1.0 - sCurve) + rimY * sCurve;
+            } else {
+              const t = (d - 0.75) / 2.05;
+              const bankBlend = 0.5 * (1.0 + Math.cos(t * Math.PI));
+              h = h * (1.0 - bankBlend) + rimY * bankBlend;
+            }
+          }
+        } else if (feat.surfaceType === SurfaceType.GREEN) {
+          const conform = feat.conformDemBlend ?? 1.0;
+          if (conform < 0.999 && d < 2.0) {
+            const flatW = (1.0 - conform) * (d <= 0 ? 1.0 : Math.max(0, 1.0 - d / 2.0));
+            const targetY = feat.baseElevation ?? h;
+            h = h * (1.0 - flatW) + targetY * flatW;
+          }
+        }
+        continue;
+      }
+
       if (feat.surfaceType === SurfaceType.TEE) {
         const halfW = feat.width * 0.5;
         const halfL = feat.length * 0.5;
@@ -2153,6 +2507,28 @@ export class TerrainGrid {
   }
 
   public getSurfaceAt(worldX: number, worldZ: number): SurfaceType {
+    // Check traced MapNG polygon features first in composite golf priority order
+    const priorityOrder: SurfaceType[] = [
+      SurfaceType.BUNKER,
+      SurfaceType.WATER,
+      SurfaceType.GREEN,
+      SurfaceType.TEE,
+      SurfaceType.FAIRWAY
+    ];
+    for (const targetType of priorityOrder) {
+      for (let i = this.stampedFeatures.length - 1; i >= 0; i--) {
+        const feat = this.stampedFeatures[i];
+        if (feat.surfaceType !== targetType || !feat.contour || feat.contour.length < 3) continue;
+        if (
+          Math.abs(worldX - feat.centerX) <= feat.width * 0.5 + 1.0 &&
+          Math.abs(worldZ - feat.centerZ) <= feat.length * 0.5 + 1.0 &&
+          pointInPolygon(worldX, worldZ, feat.contour)
+        ) {
+          return targetType;
+        }
+      }
+    }
+
     const cx = Math.max(0, Math.min(this.cols - 1, Math.round(worldX)));
     const cz = Math.max(0, Math.min(this.rows - 1, Math.round(worldZ)));
     return this.surfaceTypes[cz * this.cols + cx] as SurfaceType;
@@ -2608,6 +2984,10 @@ export class TerrainGrid {
 
     for (let featIdx = 0; featIdx < this.stampedFeatures.length; featIdx++) {
       const feat = this.stampedFeatures[featIdx];
+      if (feat.contour && feat.contour.length >= 3) {
+        // Traced arbitrary polygon features render via GPU SDF atlas / polygon layer instead of parametric ellipses
+        continue;
+      }
       if (feat.surfaceType === SurfaceType.BUNKER && bunkerCount < 16) {
         const halfW = feat.width * 0.5;
         const halfL = feat.length * 0.5;
@@ -2731,6 +3111,266 @@ export class TerrainGrid {
     plugin.greenCount = greenCount;
     plugin.waterCount = waterCount;
     plugin.teeCount = teeCount;
+    this.rebuildTracedSdfAtlas(plugin);
+  }
+
+  /**
+   * Builds/updates the universal RGBA8 linear-filtered GPU SDF Atlas (512x1024, [-16m..+16m])
+   * for any arbitrary traced MapNG Fairway, Green, Bunker, or Water contours.
+   */
+  private rebuildTracedSdfAtlas(plugin: BunkerGrassExclusionPlugin) {
+    const TW = 512;
+    const TH = 1024;
+    const data = this.tracedSdfData;
+    if (!data) {
+      plugin.tracedCount = 0;
+      return;
+    }
+
+    const channelForType = (st: SurfaceType): number => {
+      switch (st) {
+        case SurfaceType.FAIRWAY: return 0;
+        case SurfaceType.GREEN: return 1;
+        case SurfaceType.BUNKER: return 2;
+        case SurfaceType.WATER: return 3;
+        default: return -1;
+      }
+    };
+
+    const tracedItems: {
+      featIdx: number;
+      ch: number;
+      contour: PolygonPoint[];
+      minX: number;
+      maxX: number;
+      minZ: number;
+      maxZ: number;
+    }[] = [];
+
+    plugin.tracedSurfIds = [0, 0, 0, 0];
+    plugin.tracedFringeIds = [0, 0, 0, 0];
+    plugin.tracedCollarW = [1.8, 1.65, 1.2, 2.15];
+    plugin.tracedShowCollar = [1, 1, 1, 1];
+
+    for (let featIdx = 0; featIdx < this.stampedFeatures.length; featIdx++) {
+      const feat = this.stampedFeatures[featIdx];
+      if (!feat.contour || feat.contour.length < 3) continue;
+      const ch = channelForType(feat.surfaceType);
+      if (ch < 0) continue;
+
+      const surfMat = this.getFeatureSubMaterialSettings(featIdx, 'surface');
+      const fringeMat = this.getFeatureSubMaterialSettings(featIdx, 'fringe');
+      const surfId = this.getOrRegisterLayerId(featIdx, 'surface');
+      const fringeId = this.getOrRegisterLayerId(featIdx, 'fringe');
+      const showCollar = fringeMat.showCollarRings !== false && surfMat.showCollarRings !== false;
+      const defCollar =
+        feat.surfaceType === SurfaceType.BUNKER ? 1.2 :
+        feat.surfaceType === SurfaceType.WATER ? 2.15 :
+        feat.surfaceType === SurfaceType.GREEN ? 1.65 : 1.8;
+      const collarW = fringeMat.collarWidth ?? surfMat.collarWidth ?? defCollar;
+
+      plugin.tracedSurfIds[ch] = surfId;
+      plugin.tracedFringeIds[ch] = fringeId;
+      plugin.tracedCollarW[ch] = collarW;
+      plugin.tracedShowCollar[ch] = showCollar ? 1 : 0;
+
+      const b = computePolygonBounds(feat.contour);
+      tracedItems.push({
+        featIdx,
+        ch,
+        contour: feat.contour,
+        minX: b.minX - 15.5,
+        maxX: b.maxX + 15.5,
+        minZ: b.minZ - 15.5,
+        maxZ: b.maxZ + 15.5
+      });
+    }
+
+    if (tracedItems.length === 0) {
+      plugin.tracedCount = 0;
+      if (this.hasAnyTracedSdf) {
+        data.fill(255);
+        this.tracedSdfTex?.update(data);
+        this.hasAnyTracedSdf = false;
+      }
+      return;
+    }
+
+    data.fill(255);
+    for (const item of tracedItems) {
+      const px0 = Math.max(0, Math.floor((item.minX / this.width) * TW));
+      const px1 = Math.min(TW - 1, Math.ceil((item.maxX / this.width) * TW));
+      const py0 = Math.max(0, Math.floor((item.minZ / this.length) * TH));
+      const py1 = Math.min(TH - 1, Math.ceil((item.maxZ / this.length) * TH));
+
+      for (let py = py0; py <= py1; py++) {
+        const wz = ((py + 0.5) / TH) * this.length;
+        const rowOff = py * TW;
+        for (let px = px0; px <= px1; px++) {
+          const wx = ((px + 0.5) / TW) * this.width;
+          const d = signedDistanceToPolygon(wx, wz, item.contour);
+          const enc = Math.max(0, Math.min(255, Math.round(((d + 16.0) / 32.0) * 255.0)));
+          const pIdx = (rowOff + px) * 4 + item.ch;
+          if (enc < data[pIdx]) {
+            data[pIdx] = enc;
+          }
+        }
+      }
+    }
+
+    plugin.tracedCount = tracedItems.length;
+    this.hasAnyTracedSdf = true;
+    this.tracedSdfTex?.update(data);
+  }
+
+  public setSatelliteOverlayTexture(dataUrl: string | null, opacity = 0.72) {
+    if (this.satelliteOverlayTex) {
+      this.satelliteOverlayTex.dispose();
+      this.satelliteOverlayTex = null;
+    }
+    this.satelliteOpacity = Math.max(0, Math.min(1, opacity));
+    this.satelliteEnabled = Boolean(dataUrl);
+
+    if (dataUrl) {
+      const tex = new Texture(
+        dataUrl,
+        this.scene,
+        false,
+        true,
+        Texture.TRILINEAR_SAMPLINGMODE
+      );
+      tex.wrapU = Texture.CLAMP_ADDRESSMODE;
+      tex.wrapV = Texture.CLAMP_ADDRESSMODE;
+      tex.anisotropicFilteringLevel = Math.min(4, getDeviceProfile().maxAnisotropy);
+      tex.onLoadObservable.addOnce(() => {
+        this.terrainMaterial?.markAsDirty(Material.TextureDirtyFlag);
+        this.terrainMaterial?.resetDrawCache();
+      });
+      this.satelliteOverlayTex = tex;
+    }
+
+    if (this.groundShaderPlugin) {
+      this.groundShaderPlugin.satelliteOverlayTex = this.satelliteOverlayTex;
+      this.groundShaderPlugin.satelliteOpacity = this.satelliteOpacity;
+      this.groundShaderPlugin.satelliteEnabled = this.satelliteEnabled;
+    }
+    this.terrainMaterial?.markAsDirty(Material.MiscDirtyFlag);
+  }
+
+  public setSatelliteOpacity(opacity: number, enabled?: boolean) {
+    this.satelliteOpacity = Math.max(0, Math.min(1, opacity));
+    if (enabled !== undefined) {
+      this.satelliteEnabled = enabled && Boolean(this.satelliteOverlayTex);
+    }
+    if (this.groundShaderPlugin) {
+      this.groundShaderPlugin.satelliteOpacity = this.satelliteOpacity;
+      this.groundShaderPlugin.satelliteEnabled = this.satelliteEnabled;
+    }
+  }
+
+  public setSatelliteOverlayOverFeatures(amount: number) {
+    this.overlayOverFeatures = Math.max(0, Math.min(0.85, amount));
+    if (this.groundShaderPlugin) {
+      this.groundShaderPlugin.overlayOverFeatures = this.overlayOverFeatures;
+    }
+  }
+
+  public loadMapNGHeightfield(
+    newBaseHeights: Float32Array,
+    satelliteDataUrl?: string | null,
+    satelliteOpacity = 0.72,
+    clearFeatures = false
+  ) {
+    if (newBaseHeights.length !== this.baseHeights.length) {
+      throw new Error(
+        `Heightmap grid mismatch: got ${newBaseHeights.length}, expected ${this.baseHeights.length}`
+      );
+    }
+    this.baseHeights.set(newBaseHeights);
+    this.setPristineNaturalHeights(newBaseHeights);
+    this.heights.set(newBaseHeights);
+    this.surfaceTypes.fill(SurfaceType.ROUGH);
+    this.isBaseCourseDirty = true;
+
+    if (clearFeatures) {
+      this.stampedFeatures = [];
+    } else {
+      for (const f of this.stampedFeatures) {
+        f.baseElevation = this.getBaseElevation(f.centerX, f.centerZ);
+      }
+    }
+
+    if (satelliteDataUrl !== undefined) {
+      this.setSatelliteOverlayTexture(satelliteDataUrl, satelliteOpacity);
+    }
+    this.redrawSplatTexture();
+    this.rebuildMesh(false);
+  }
+
+  public addTracedFeature(
+    surfaceType: SurfaceType,
+    contourWorldPts: PolygonPoint[],
+    customName?: string
+  ): number {
+    const contour = contourWorldPts.map((p) => ({ ...p }));
+    const bounds = computePolygonBounds(contour);
+    const count = this.stampedFeatures.filter((f) => f.surfaceType === surfaceType).length + 1;
+    const labelMap: Partial<Record<SurfaceType, string>> = {
+      [SurfaceType.FAIRWAY]: `Traced Fairway #${count}`,
+      [SurfaceType.GREEN]: `Traced Green #${count}`,
+      [SurfaceType.BUNKER]: `Traced Bunker #${count}`,
+      [SurfaceType.TEE]: `Traced Tee Box #${count}`,
+      [SurfaceType.WATER]: `Traced Water #${count}`
+    };
+
+    const depthProfile =
+      surfaceType === SurfaceType.BUNKER ? -0.60 :
+      surfaceType === SurfaceType.WATER ? -2.2 :
+      surfaceType === SurfaceType.TEE ? 1.25 : 0.0;
+
+    const record: StampedFeatureRecord = {
+      id: `feat_traced_${String(surfaceType)}_${Date.now().toString(36)}`,
+      name: customName || labelMap[surfaceType] || `Traced ${surfaceType} #${count}`,
+      centerX: bounds.centerX,
+      centerZ: bounds.centerZ,
+      width: bounds.width,
+      length: bounds.length,
+      rotationRad: 0,
+      surfaceType,
+      depthProfile,
+      lipHeight: surfaceType === SurfaceType.BUNKER ? 0.60 : 0,
+      baseElevation: this.getBaseElevation(bounds.centerX, bounds.centerZ),
+      contour,
+      conformDemBlend: surfaceType === SurfaceType.GREEN ? 1.0 : undefined
+    };
+
+    this.stampedFeatures.push(record);
+    const newIdx = this.stampedFeatures.length - 1;
+    this.redrawSplatTexture();
+    this.rebuildMesh(false);
+    return newIdx;
+  }
+
+  public updateTracedFeatureContour(
+    featureIndex: number,
+    contourWorldPts: PolygonPoint[],
+    isDraft: boolean = false
+  ) {
+    if (featureIndex < 0 || featureIndex >= this.stampedFeatures.length) return;
+    const feat = this.stampedFeatures[featureIndex];
+    feat.contour = contourWorldPts.map((p) => ({ ...p }));
+    const bounds = computePolygonBounds(feat.contour);
+    feat.centerX = bounds.centerX;
+    feat.centerZ = bounds.centerZ;
+    feat.width = bounds.width;
+    feat.length = bounds.length;
+    feat.baseElevation = this.getBaseElevation(bounds.centerX, bounds.centerZ);
+
+    this.syncAnalyticalFeatureUniforms();
+    if (!isDraft || feat.surfaceType === SurfaceType.TEE) {
+      this.redrawSplatTexture();
+    }
+    this.rebuildMesh(isDraft);
   }
 
   public syncBunkerShaderUniforms() {
@@ -2738,6 +3378,12 @@ export class TerrainGrid {
   }
 
   private getFeatureAffectedBounds(feat: StampedFeatureRecord): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    if (feat.contour && feat.contour.length >= 3) {
+      const b = computePolygonBounds(feat.contour);
+      const pad = 8.0;
+      return { minX: b.minX - pad, maxX: b.maxX + pad, minZ: b.minZ - pad, maxZ: b.maxZ + pad };
+    }
+
     if (feat.doglegPoints && feat.doglegPoints.length >= 4) {
       let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
       let maxW = feat.width;
@@ -3170,15 +3816,22 @@ export class TerrainGrid {
         pt.z += dz;
       }
     }
+    if (feat.contour) {
+      for (const pt of feat.contour) {
+        pt.x += dx;
+        pt.z += dz;
+      }
+    }
     if (isDraft) {
       this.applyFastDraftFeatureMove(featureIndex, oldBounds, feat);
       return;
     }
     this.dragStaticFeatureIdx = -1;
     const skipSplat =
-      feat.surfaceType === SurfaceType.BUNKER ||
-      feat.surfaceType === SurfaceType.GREEN ||
-      feat.surfaceType === SurfaceType.WATER;
+      !feat.contour &&
+      (feat.surfaceType === SurfaceType.BUNKER ||
+        feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.WATER);
     this.rebuildAllStampedFeatures(false, skipSplat);
   }
 
@@ -3207,15 +3860,26 @@ export class TerrainGrid {
         pt.z = feat.centerZ + rx * sinA + rz * cosA;
       }
     }
+    if (feat.contour) {
+      const cosA = Math.cos(dTheta);
+      const sinA = Math.sin(dTheta);
+      for (const pt of feat.contour) {
+        const rx = pt.x - feat.centerX;
+        const rz = pt.z - feat.centerZ;
+        pt.x = feat.centerX + rx * cosA - rz * sinA;
+        pt.z = feat.centerZ + rx * sinA + rz * cosA;
+      }
+    }
     if (isDraft) {
       this.applyFastDraftFeatureMove(featureIndex, oldBounds, feat);
       return;
     }
     this.dragStaticFeatureIdx = -1;
     const skipSplat =
-      feat.surfaceType === SurfaceType.BUNKER ||
-      feat.surfaceType === SurfaceType.GREEN ||
-      feat.surfaceType === SurfaceType.WATER;
+      !feat.contour &&
+      (feat.surfaceType === SurfaceType.BUNKER ||
+        feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.WATER);
     this.rebuildAllStampedFeatures(false, skipSplat);
   }
 
@@ -3258,15 +3922,28 @@ export class TerrainGrid {
         pt.z = feat.centerZ + rx * sinA + rz * cosA;
       }
     }
+    if (feat.contour) {
+      const cosA = Math.cos(dTheta);
+      const sinA = Math.sin(dTheta);
+      for (const pt of feat.contour) {
+        pt.x += dx;
+        pt.z += dz;
+        const rx = pt.x - feat.centerX;
+        const rz = pt.z - feat.centerZ;
+        pt.x = feat.centerX + rx * cosA - rz * sinA;
+        pt.z = feat.centerZ + rx * sinA + rz * cosA;
+      }
+    }
     if (isDraft) {
       this.applyFastDraftFeatureMove(featureIndex, oldBounds, feat);
       return;
     }
     this.dragStaticFeatureIdx = -1;
     const skipSplat =
-      feat.surfaceType === SurfaceType.BUNKER ||
-      feat.surfaceType === SurfaceType.GREEN ||
-      feat.surfaceType === SurfaceType.WATER;
+      !feat.contour &&
+      (feat.surfaceType === SurfaceType.BUNKER ||
+        feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.WATER);
     this.rebuildAllStampedFeatures(false, skipSplat);
   }
 
@@ -4177,6 +4854,10 @@ export class TerrainGrid {
   }
 
   public getFeaturePerimeterPoints(feat: StampedFeatureRecord): { x: number; z: number }[] {
+    if (feat.contour && feat.contour.length >= 3) {
+      return feat.contour;
+    }
+
     const pts: { x: number; z: number }[] = [];
     const halfW = feat.width * 0.5;
     const halfL = feat.length * 0.5;
@@ -4245,6 +4926,24 @@ export class TerrainGrid {
    * Checks features in reverse order (top layer down: Bunkers -> Green -> Tee -> Water -> Fairway).
    */
   public findFeatureAt(worldX: number, worldZ: number): { feature: StampedFeatureRecord; index: number } | null {
+    // 0. Check arbitrary traced contours first in tournament priority order
+    const tracedPriority: SurfaceType[] = [
+      SurfaceType.BUNKER,
+      SurfaceType.WATER,
+      SurfaceType.GREEN,
+      SurfaceType.TEE,
+      SurfaceType.FAIRWAY
+    ];
+    for (const targetType of tracedPriority) {
+      for (let i = this.stampedFeatures.length - 1; i >= 0; i--) {
+        const f = this.stampedFeatures[i];
+        if (f.surfaceType !== targetType || !f.contour || f.contour.length < 3) continue;
+        if (signedDistanceToPolygon(worldX, worldZ, f.contour) <= 3.0) {
+          return { feature: f, index: i };
+        }
+      }
+    }
+
     // 1. Direct query of surface type from terrain grid
     const surf = this.getSurfaceAt(worldX, worldZ);
     if (surf === SurfaceType.BUNKER) {
@@ -4456,6 +5155,21 @@ export class TerrainGrid {
     this.layerPropsTex.wrapU = Texture.CLAMP_ADDRESSMODE;
     this.layerPropsTex.wrapV = Texture.CLAMP_ADDRESSMODE;
 
+    this.tracedSdfData = new Uint8Array(512 * 1024 * 4);
+    this.tracedSdfData.fill(255);
+    this.tracedSdfTex = RawTexture.CreateRGBATexture(
+      this.tracedSdfData,
+      512,
+      1024,
+      this.scene,
+      false,
+      false,
+      Texture.BILINEAR_SAMPLINGMODE
+    );
+    this.tracedSdfTex.name = 'terrainTracedSdfAtlas';
+    this.tracedSdfTex.wrapU = Texture.CLAMP_ADDRESSMODE;
+    this.tracedSdfTex.wrapV = Texture.CLAMP_ADDRESSMODE;
+
     const mat = new PBRMaterial('terrainMat', this.scene);
     const plugin = new BunkerGrassExclusionPlugin(mat);
     plugin.groundColorTex = this.pbrGrassColorTex;
@@ -4463,6 +5177,11 @@ export class TerrainGrid {
     plugin.fallbackSplatTex = this.splatTexture;
     plugin.surfaceMaskTex = this.surfaceMaskTex;
     plugin.layerPropsTex = this.layerPropsTex;
+    plugin.tracedSdfTex = this.tracedSdfTex;
+    plugin.satelliteOverlayTex = this.satelliteOverlayTex;
+    plugin.satelliteOpacity = this.satelliteOpacity;
+    plugin.satelliteEnabled = this.satelliteEnabled;
+    plugin.overlayOverFeatures = this.overlayOverFeatures;
     plugin.sandColorTex = this.defaultSandColorTex;
     plugin.waterBedColorTex = this.defaultWaterBedColorTex;
     plugin.featColorTex = this.defaultTurfColorTex;
@@ -5536,6 +6255,33 @@ export class TerrainGrid {
     _mZ: number,
     _tiles: Record<string, HTMLCanvasElement>
   ) {
+    if (feat.contour && feat.contour.length >= 3) {
+      if (feat.surfaceType === SurfaceType.TEE) {
+        const surfMat = this.getFeatureSubMaterialSettings(featIdx, 'surface');
+        const fringeMat = this.getFeatureSubMaterialSettings(featIdx, 'fringe');
+        const surfId = this.getOrRegisterLayerId(featIdx, 'surface');
+        const fringeId = this.getOrRegisterLayerId(featIdx, 'fringe');
+        const localPts = feat.contour.map((p) => ({
+          x: p.x - feat.centerX,
+          z: p.z - feat.centerZ
+        }));
+        const showCollar = fringeMat.showCollarRings !== false && surfMat.showCollarRings !== false;
+        const collarW = fringeMat.collarWidth ?? surfMat.collarWidth ?? 0.50;
+        if (showCollar && collarW > 0.02) {
+          const fringePts = this.computeUniformOffsetPolygon(localPts, collarW);
+          this.fillSubLayerPolygon(
+            ctx, fringePts, feat.centerX, feat.centerZ, 0, sX, sZ,
+            '#35a043', fringeMat, fringeId, 0, 0
+          );
+        }
+        this.fillSubLayerPolygon(
+          ctx, localPts, feat.centerX, feat.centerZ, 0, sX, sZ,
+          '#43a047', surfMat, surfId, 0, 0
+        );
+      }
+      return;
+    }
+
     if (feat.doglegPoints && feat.doglegPoints.length >= 4) {
       this.drawDoglegFairwayOnCanvas(
         ctx,
@@ -5664,6 +6410,26 @@ export class TerrainGrid {
           let isSub = false;
 
           for (const feat of this.stampedFeatures) {
+            if (feat.contour && feat.contour.length >= 3) {
+              if (
+                feat.surfaceType === SurfaceType.BUNKER ||
+                feat.surfaceType === SurfaceType.TEE ||
+                feat.surfaceType === SurfaceType.WATER
+              ) {
+                const halfW = feat.width * 0.5;
+                const halfL = feat.length * 0.5;
+                if (
+                  Math.abs(midX - feat.centerX) <= halfW + 4.5 &&
+                  Math.abs(midZ - feat.centerZ) <= halfL + 4.5
+                ) {
+                  if (Math.abs(signedDistanceToPolygon(midX, midZ, feat.contour)) <= 3.5) {
+                    isSub = true;
+                    break;
+                  }
+                }
+              }
+              continue;
+            }
             if (feat.surfaceType === SurfaceType.BUNKER) {
               const halfW = feat.width * 0.5;
               const halfL = feat.length * 0.5;
