@@ -457,6 +457,8 @@ export class OverheadHoleLayout {
   private viewScale: number = 1.0;
   private canvasWidth: number = 536;
   private canvasHeight: number = 620;
+  private rotCenterX: number = 0;
+  private rotCenterZ: number = 0;
   private rotMinZ: number = 0;
   private satImg: HTMLImageElement | null = null;
   private satImgUrl: string = '';
@@ -629,9 +631,8 @@ export class OverheadHoleLayout {
     const rotX = relX * cosA - relZ * sinA;
     const rotZ = relX * sinA + relZ * cosA;
 
-    const padBottom = 32;
-    const cx = this.canvasWidth * 0.5 + rotX * this.viewScale;
-    const cy = this.canvasHeight - padBottom - (rotZ - this.rotMinZ) * this.viewScale;
+    const cx = this.canvasWidth * 0.5 + (rotX - this.rotCenterX) * this.viewScale;
+    const cy = this.canvasHeight * 0.5 - (rotZ - this.rotCenterZ) * this.viewScale;
     return { x: cx, y: cy };
   }
 
@@ -641,10 +642,9 @@ export class OverheadHoleLayout {
   private canvasToWorld(cx: number, cy: number): { x: number; z: number } | null {
     if (!this.lastData || this.viewScale === 0) return null;
     const { tee } = this.getEffectiveTeeAndPin();
-    const padBottom = 32;
 
-    const rotX = (cx - this.canvasWidth * 0.5) / this.viewScale;
-    const rotZ = (this.canvasHeight - padBottom - cy) / this.viewScale + this.rotMinZ;
+    const rotX = (cx - this.canvasWidth * 0.5) / this.viewScale + this.rotCenterX;
+    const rotZ = (this.canvasHeight * 0.5 - cy) / this.viewScale + this.rotCenterZ;
 
     const cosNegA = Math.cos(-this.viewAngle);
     const sinNegA = Math.sin(-this.viewAngle);
@@ -656,38 +656,90 @@ export class OverheadHoleLayout {
 
   private computeViewport() {
     if (!this.lastData) return;
+    if (this.canvas) {
+      const rect = this.canvas.getBoundingClientRect();
+      if (rect.width >= 60 && rect.height >= 60) {
+        const rw = Math.round(rect.width);
+        const rh = Math.round(rect.height);
+        if (Math.abs(this.canvas.width - rw) > 2 || Math.abs(this.canvas.height - rh) > 2) {
+          this.canvas.width = rw;
+          this.canvas.height = rh;
+        }
+        this.canvasWidth = this.canvas.width;
+        this.canvasHeight = this.canvas.height;
+      }
+    }
+
     const { tee, pin } = this.getEffectiveTeeAndPin();
     const ball = this.lastData.ballPos;
 
-    // Angle of vector from Tee to Pin
+    // Angle of vector from Tee to Pin (oriented vertically: Tee near bottom, Pin near top)
     const dx = pin.x - tee.x;
     const dz = pin.z - tee.z;
-    // Align vector strictly to +Z in rotated frame
-    this.viewAngle = -Math.atan2(dx, dz);
+    const holeDist = Math.hypot(dx, dz);
+    this.viewAngle = holeDist > 2 ? -Math.atan2(dx, dz) : 0;
 
-    // Transform key landmarks into rotated space
     const cosA = Math.cos(this.viewAngle);
     const sinA = Math.sin(this.viewAngle);
 
-    const rotPinZ = (pin.x - tee.x) * sinA + (pin.z - tee.z) * cosA;
-    const rotBallZ = (ball.x - tee.x) * sinA + (ball.z - tee.z) * cosA;
-    const rotBallX = (ball.x - tee.x) * cosA - (ball.z - tee.z) * sinA;
+    const toRot = (wx: number, wz: number) => {
+      const rx = wx - tee.x;
+      const rz = wz - tee.z;
+      return {
+        x: rx * cosA - rz * sinA,
+        z: rx * sinA + rz * cosA
+      };
+    };
 
-    this.rotMinZ = Math.min(-15, rotBallZ - 10);
-    const rotMaxZ = Math.max(rotPinZ + 25, rotBallZ + 15);
-    const totalSpanZ = Math.max(80, rotMaxZ - this.rotMinZ);
+    const rPin = toRot(pin.x, pin.z);
+    const rBall = toRot(ball.x, ball.z);
 
-    // Max fairway width envelope (typically 80-120m)
-    let maxAbsX = Math.max(45, Math.abs(rotBallX) + 15);
-    for (const feat of this.lastData.features) {
-      const fRotX = (feat.centerX - tee.x) * cosA - (feat.centerZ - tee.z) * sinA;
-      maxAbsX = Math.max(maxAbsX, Math.abs(fRotX) + feat.width * 0.6);
+    let minRX = Math.min(0, rPin.x, rBall.x);
+    let maxRX = Math.max(0, rPin.x, rBall.x);
+    let minRZ = Math.min(0, rPin.z, rBall.z);
+    let maxRZ = Math.max(0, rPin.z, rBall.z);
+
+    if (this.lastData.aimTargetPos) {
+      const rAim = toRot(this.lastData.aimTargetPos.x, this.lastData.aimTargetPos.z);
+      minRX = Math.min(minRX, rAim.x);
+      maxRX = Math.max(maxRX, rAim.x);
+      minRZ = Math.min(minRZ, rAim.z);
+      maxRZ = Math.max(maxRZ, rAim.z);
     }
 
-    const availW = this.canvasWidth - 28;
-    const availH = this.canvasHeight - 56;
+    // Include ONLY features belonging to the active hole corridor (within 95m laterally) so distant holes never skew centering!
+    for (const feat of this.lastData.features) {
+      const rf = toRot(feat.centerX, feat.centerZ);
+      if (rf.z < -45 || rf.z > rPin.z + 65 || Math.abs(rf.x) > 95) continue;
+      const padX = Math.min(45, feat.width * 0.52);
+      const padZ = Math.min(45, feat.length * 0.52);
+      minRX = Math.min(minRX, rf.x - padX);
+      maxRX = Math.max(maxRX, rf.x + padX);
+      minRZ = Math.min(minRZ, rf.z - padZ);
+      maxRZ = Math.max(maxRZ, rf.z + padZ);
+    }
 
-    const scaleX = availW / (maxAbsX * 2);
+    // Generous symmetric padding so the hole is dead-center and the ball in flight/roll stays comfortably inside frame
+    const padBehind = 38;
+    const padAhead = 44;
+    minRZ -= padBehind;
+    maxRZ += padAhead;
+
+    const minHalfW = Math.max(58, (maxRZ - minRZ) * 0.24);
+    const curHalfW = (maxRX - minRX) * 0.5 + 24;
+    const effHalfW = Math.max(minHalfW, curHalfW);
+
+    this.rotCenterX = (minRX + maxRX) * 0.5;
+    this.rotCenterZ = (minRZ + maxRZ) * 0.5;
+    this.rotMinZ = minRZ;
+
+    const totalSpanX = effHalfW * 2;
+    const totalSpanZ = Math.max(110, maxRZ - minRZ);
+
+    const availW = Math.max(60, this.canvasWidth - 24);
+    const availH = Math.max(60, this.canvasHeight - 28);
+
+    const scaleX = availW / totalSpanX;
     const scaleZ = availH / totalSpanZ;
     this.viewScale = Math.min(scaleX, scaleZ);
   }

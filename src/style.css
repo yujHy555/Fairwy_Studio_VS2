@@ -3158,23 +3158,35 @@ body.in-designer-mode #club-card-putter {
 .dock-pane.is-active {
   display: flex;
   gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 189, 248, 0.35) transparent;
 }
 
 /* --- Lighting Pane --- */
 .lighting-hdri-col {
   flex: 1.15;
-  min-width: 0;
+  min-width: 190px;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
 }
 
 .lighting-controls-col {
-  flex: 1;
-  min-width: 140px;
+  flex: 1 1 165px;
+  min-width: 155px;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 189, 248, 0.35) transparent;
 }
 
 @media (max-width: 1280px) {
