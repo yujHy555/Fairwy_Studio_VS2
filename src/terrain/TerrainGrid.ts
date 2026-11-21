@@ -568,6 +568,19 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               return mix(nearR, macroR, blendW);
             }
 
+            // Anti-tiled 2-tap tangent normal sampler (eliminates rotated normal-map square planes even on untextured flat Tee Box decks!)
+            vec3 sampleSeamlessNormal(sampler2D samp, vec2 uv) {
+              vec3 nA = texture2D(samp, uv).xyz * 2.0 - 1.0;
+              vec2 rotUv = vec2(uv.x * 0.7986 - uv.y * 0.6018, uv.x * 0.6018 + uv.y * 0.7986) * 0.43 + vec2(0.37, 0.71);
+              vec3 nB = texture2D(samp, rotUv).xyz * 2.0 - 1.0;
+              // Un-rotate nB.xy back into base tangent frame so lighting direction stays physically consistent
+              vec2 nBxy = vec2(nB.x * 0.7986 + nB.y * 0.6018, -nB.x * 0.6018 + nB.y * 0.7986);
+              float p1 = sin(uv.x * 1.31 + sin(uv.y * 0.97)) * 0.5 + 0.5;
+              float p2 = cos(uv.y * 1.17 - cos(uv.x * 0.83)) * 0.5 + 0.5;
+              float blendW = smoothstep(0.18, 0.82, p1 * 0.55 + p2 * 0.45) * 0.50 + 0.20;
+              return normalize(vec3(mix(nA.xy, nBxy, blendW), max(0.55, mix(nA.z, nB.z, blendW))));
+            }
+
             // Fetches per-layer GPU transforms & properties cleanly for any independent sub-material ID (0..255)
             void readLayerEntry(float lid, out vec4 uvParams, out vec4 matParams, out vec4 extraParams) {
               float lu = (lid + 0.5) / 256.0;
@@ -603,24 +616,24 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
               if (kind > 3.5) {
                 texCol = sampleSeamlessTurf(featColorSampler, layerUv);
-                normRaw = texture2D(featNormalSampler, layerUv).xyz * 2.0 - 1.0;
+                normRaw = sampleSeamlessNormal(featNormalSampler, layerUv);
                 roughRaw = sampleSeamlessScalar(featRoughSampler, layerUv);
               } else if (kind > 2.5) {
                 texCol = texture2D(waterBedColorSampler, layerUv).rgb;
                 #if defined(BUMP)
-                  normRaw = texture2D(bumpSampler, layerUv).xyz * 2.0 - 1.0;
+                  normRaw = sampleSeamlessNormal(bumpSampler, layerUv);
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
                 roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
               } else if (kind > 1.5) {
                 texCol = sampleSeamlessTurf(sandColorSampler, layerUv);
-                normRaw = texture2D(featNormalSampler, layerUv).xyz * 2.0 - 1.0;
+                normRaw = sampleSeamlessNormal(featNormalSampler, layerUv);
                 roughRaw = sampleSeamlessScalar(featRoughSampler, layerUv);
               } else if (kind > 0.5) {
                 texCol = sampleSeamlessTurf(groundColorSampler, layerUv);
                 #if defined(BUMP)
-                  normRaw = texture2D(bumpSampler, layerUv).xyz * 2.0 - 1.0;
+                  normRaw = sampleSeamlessNormal(bumpSampler, layerUv);
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
@@ -628,7 +641,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               } else {
                 texCol = sampleSeamlessTurf(featColorSampler, layerUv);
                 #if defined(BUMP)
-                  normRaw = texture2D(bumpSampler, layerUv).xyz * 2.0 - 1.0;
+                  normRaw = sampleSeamlessNormal(bumpSampler, layerUv);
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
@@ -638,7 +651,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outColor = texCol;
               outColorMix = clamp(lpMat.x, 0.0, 1.0);
               float effSlope = kind > 1.5 && kind < 2.5 ? slopeSafe : 1.0;
-              float normLvl = max(0.0, lpMat.z) * effSlope;
+              float normLvl = max(0.0, lpMat.z) * effSlope * (outColorMix < 0.01 ? 0.0 : 1.0);
               outNormal = normLvl > 0.001
                 ? normalize(terrainTBN * normalize(vec3(normRaw.xy * normLvl, max(0.55, normRaw.z))))
                 : geomN;
