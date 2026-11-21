@@ -249,9 +249,9 @@ export class CameraController {
         this.camera.beta = Math.PI / 3.2;
       }
     } else if (mode === 'aim') {
-      // Default start ball view: pulled back 5.4m
-      this.lockedPlayRadius = 5.4;
-      this.camera.beta = Math.PI / 2.42;
+      // Elevated broadcast tee/aim view framing both tee markers, ball, and sweeping course vista ahead
+      this.lockedPlayRadius = 7.4;
+      this.camera.beta = Math.PI / 2.53;
     } else if (mode === 'green') {
       // Intimate, broadcast-style putting camera framing the ball and aiming towards the cup
       this.lockedPlayRadius = 3.6;
@@ -265,22 +265,22 @@ export class CameraController {
   }
 
   public snapAimBehindBall(ballPos: Vector3, aimAzimuthDeg: number) {
-    this.targetPosition.set(ballPos.x, ballPos.y + 0.42, ballPos.z);
+    this.targetPosition.set(ballPos.x, ballPos.y + 0.55, ballPos.z);
     this.camera.target.copyFrom(this.targetPosition);
 
     const aimRad = (aimAzimuthDeg * Math.PI) / 180.0;
     this.camera.alpha = -aimRad - Math.PI / 2;
-    this.camera.beta = Math.PI / 2.42;
-    this.lockedPlayRadius = 5.4;
+    this.camera.beta = Math.PI / 2.53;
+    this.lockedPlayRadius = 7.4;
     if (this.mode !== 'designer') {
       this.applyCameraConstraints();
     } else {
-      this.camera.radius = 5.4;
+      this.camera.radius = 7.4;
     }
   }
 
   public setAimHeading(ballPos: Vector3, aimAzimuthDeg: number) {
-    this.targetPosition.set(ballPos.x, ballPos.y + 0.42, ballPos.z);
+    this.targetPosition.set(ballPos.x, ballPos.y + 0.55, ballPos.z);
     this.camera.target.copyFrom(this.targetPosition);
 
     const aimRad = (aimAzimuthDeg * Math.PI) / 180.0;
