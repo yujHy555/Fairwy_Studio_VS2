@@ -2242,22 +2242,35 @@ class FairwayStudioApp {
 
     const cols = this.terrain.cols;
     const rows = this.terrain.rows;
+    const gridX = this.terrain.gridX;
+    const gridZ = this.terrain.gridZ;
+    const cellSize = this.terrain.cellSize;
     const totalVerts = cols * rows;
     const positions = new Float32Array(totalVerts * 3);
-    const indices = new Uint32Array(this.terrain.width * this.terrain.length * 6);
+    const mask = this.terrain.courseBoundaryMask;
 
     for (let z = 0; z < rows; z++) {
+      const wz = z * cellSize;
       for (let x = 0; x < cols; x++) {
         const idx = z * cols + x;
-        positions[idx * 3] = x;
-        positions[idx * 3 + 1] = this.terrain.heights[idx] + 0.025;
-        positions[idx * 3 + 2] = z;
+        positions[idx * 3] = x * cellSize;
+        positions[idx * 3 + 1] = this.terrain.heights[idx] + 0.04;
+        positions[idx * 3 + 2] = wz;
       }
     }
 
+    let cellCount = 0;
+    if (mask && mask.length === gridX * gridZ) {
+      for (let i = 0; i < mask.length; i++) if (mask[i]) cellCount++;
+    } else {
+      cellCount = gridX * gridZ;
+    }
+    const indices = new Uint32Array(cellCount * 6);
+
     let iIdx = 0;
-    for (let z = 0; z < this.terrain.length; z++) {
-      for (let x = 0; x < this.terrain.width; x++) {
+    for (let z = 0; z < gridZ; z++) {
+      for (let x = 0; x < gridX; x++) {
+        if (mask && mask.length === gridX * gridZ && mask[z * gridX + x] === 0) continue;
         const idx00 = z * cols + x;
         const idx10 = z * cols + (x + 1);
         const idx01 = (z + 1) * cols + x;
@@ -3349,7 +3362,7 @@ class FairwayStudioApp {
     const feat = this.terrain.stampedFeatures[index];
     if (!feat) return;
 
-    if (this.featureGizmoProxy) {
+    if (this.featureGizmoProxy && !isLive) {
       const elev = this.terrain.getElevation(feat.centerX, feat.centerZ);
       this.featureGizmoProxy.position.set(feat.centerX, elev + 0.15, feat.centerZ);
       this.featureGizmoProxy.rotation.y = -feat.rotationRad;
@@ -5206,7 +5219,7 @@ class FairwayStudioApp {
       }
     }
 
-    const margin = 120;
+    const margin = 280;
     minX = Math.max(0, minX - margin);
     maxX = Math.min(this.terrain.width, maxX + margin);
     minZ = Math.max(0, minZ - margin);
@@ -5214,7 +5227,7 @@ class FairwayStudioApp {
 
     for (const f of this.terrain.stampedFeatures) {
       const isPrimaryAnchor = f.surfaceType === SurfaceType.TEE || f.surfaceType === SurfaceType.GREEN;
-      const pad = isPrimaryAnchor ? 45 : 24;
+      const pad = isPrimaryAnchor ? 90 : 40;
       const fx0 = f.centerX - f.width * 0.5 - pad;
       const fx1 = f.centerX + f.width * 0.5 + pad;
       const fz0 = f.centerZ - f.length * 0.5 - pad;

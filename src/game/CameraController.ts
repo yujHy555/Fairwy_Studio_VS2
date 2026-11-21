@@ -340,6 +340,14 @@ export class CameraController {
 
     // 1. Free Designer camera gliding without boundary/terrain clamps or collision pushback
     if (this.mode === 'designer') {
+      // Continuously ensure Designer Mode stays 100% unrestricted (no zoom/pitch/bound clamps)
+      this.camera.lowerBetaLimit = 0.01;
+      this.camera.upperBetaLimit = Math.PI - 0.05;
+      this.camera.lowerRadiusLimit = 0.25;
+      this.camera.upperRadiusLimit = null;
+      this.camera.wheelDeltaPercentage = 0.04;
+      this.camera.wheelPrecision = 0;
+
       if (this.isShiftPanning) {
         this.camera.alpha = this.panStartAlpha;
         this.camera.beta = this.panStartBeta;

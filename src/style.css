@@ -3607,15 +3607,15 @@ body.in-designer-mode #club-card-putter {
 }
 
 .hud-overhead-layout-panel {
-  width: 314px !important;
-  top: 72px !important;
+  width: 348px !important;
+  top: 156px !important;
   right: 16px !important;
   transform: none !important;
 }
 
 #overhead-hole-canvas {
-  width: 290px !important;
-  height: 310px !important;
+  width: 324px !important;
+  height: 350px !important;
 }
 
 /* Next-Gen Frame Rate Counter & Optimization Tips HUD */
@@ -4625,8 +4625,8 @@ body.in-designer-mode #club-card-putter {
 }
 
 .overhead-graphic-wrap {
-  width: 290px;
-  height: 310px;
+  width: 324px;
+  height: 350px;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -700,9 +700,11 @@ export class CourseManager {
       this.activeTeeMesh.setEnabled(true);
       this.activeTeeMesh.isVisible = true;
       const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
-      const headingRad = Math.atan2(targetPt.x - bestTee.centerX, targetPt.z - bestTee.centerZ);
+      const defaultHeadingRad = Math.atan2(targetPt.x - bestTee.centerX, targetPt.z - bestTee.centerZ);
+      const hasCustomRot = Math.abs(bestTee.rotationRad || 0) > 0.001;
+      const finalYaw = hasCustomRot ? -bestTee.rotationRad : defaultHeadingRad;
       this.activeTeeMesh.rotationQuaternion = null;
-      this.activeTeeMesh.rotation.set(0, headingRad, 0);
+      this.activeTeeMesh.rotation.set(0, finalYaw, 0);
     }
     if (this.activeTeeMesh) {
       this.activeTeeMesh.alwaysSelectAsActiveMesh = true;

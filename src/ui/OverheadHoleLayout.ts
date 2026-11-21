@@ -111,9 +111,8 @@ export class OverheadHoleLayout {
     }
 
     if (effectiveMode === 'graphic' && hasGraphic && graphicWrap && imgEl) {
-      const targetSrc = this.showDistanceGraphic && hole.distanceGuideImageUrl
-        ? hole.distanceGuideImageUrl
-        : (hole.overheadImageUrl || '');
+      // Keep the clean hole graphic visible underneath and render live distances + ball beacon as a crisp HUD overlay
+      const targetSrc = hole.overheadImageUrl || '';
       if (targetSrc && imgEl.getAttribute('src') !== targetSrc) {
         imgEl.src = targetSrc;
       }
@@ -240,6 +239,59 @@ export class OverheadHoleLayout {
     const syncedHoleMeters = Math.max(40, Math.round(teeToPin));
     const syncedRemMeters = Math.max(0, Math.round(ballToPin));
 
+    // Always draw Live Ball Beacon + Aim Direction Indicator over the hole graphic
+    {
+      const tee = this.lastData.hole.teePosition;
+      const pin = this.lastData.pinPos;
+      const ball = this.lastData.ballPos;
+      const dxH = pin.x - tee.x;
+      const dzH = pin.z - tee.z;
+      const holeLen = Math.max(40, Math.hypot(dxH, dzH));
+      const fwdX = dxH / holeLen;
+      const fwdZ = dzH / holeLen;
+      const rightX = fwdZ;
+      const rightZ = -fwdX;
+
+      const relX = ball.x - tee.x;
+      const relZ = ball.z - tee.z;
+      const alongFrac = Math.max(-0.08, Math.min(1.06, (relX * fwdX + relZ * fwdZ) / holeLen));
+      const latFrac = Math.max(-0.42, Math.min(0.42, (relX * rightX + relZ * rightZ) / Math.min(110, holeLen * 0.42)));
+
+      const ballPxX = rect.width * (0.5 + latFrac);
+      const ballPxY = rect.height * (0.88 - alongFrac * 0.74);
+      const pinPxX = rect.width * 0.5;
+      const pinPxY = rect.height * 0.14;
+
+      ctx.save();
+      // Subtle dashed sightline from live ball to pin
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(ballPxX, ballPxY);
+      ctx.lineTo(pinPxX, pinPxY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Pulsing outer beacon ring
+      const pulse = 7 + Math.sin(performance.now() * 0.006) * 2.5;
+      ctx.beginPath();
+      ctx.arc(ballPxX, ballPxY, pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Crisp white golf ball dot
+      ctx.beginPath();
+      ctx.arc(ballPxX, ballPxY, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // When Distances toggle is ON in Graphic mode, draw live synced 3D distances over the hole graphic
     if (this.showDistanceGraphic) {
       ctx.save();
@@ -351,8 +403,8 @@ export class OverheadHoleLayout {
   private viewCenterZ: number = 0;
   private viewAngle: number = 0; // rotation to align hole vertically
   private viewScale: number = 1.0;
-  private canvasWidth: number = 290;
-  private canvasHeight: number = 310;
+  private canvasWidth: number = 324;
+  private canvasHeight: number = 350;
   private rotMinZ: number = 0;
 
   // Tooltip

@@ -4128,9 +4128,12 @@ export class TerrainGrid {
       for (const pt of feat.contour) {
         const rx = pt.x - feat.centerX;
         const rz = pt.z - feat.centerZ;
-        pt.x = feat.centerX + rx * cosA - rz * sinA;
-        pt.z = feat.centerZ + rx * sinA + rz * cosA;
+        pt.x = feat.centerX + rx * cosA + rz * sinA;
+        pt.z = feat.centerZ - rx * sinA + rz * cosA;
       }
+      const b = computePolygonBounds(feat.contour);
+      feat.width = Math.max(2, b.width);
+      feat.length = Math.max(2, b.length);
     }
     if (isDraft) {
       this.applyFastDraftFeatureMove(featureIndex, oldBounds, feat);
@@ -4251,9 +4254,12 @@ export class TerrainGrid {
         pt.z += dz;
         const rx = pt.x - feat.centerX;
         const rz = pt.z - feat.centerZ;
-        pt.x = feat.centerX + rx * cosA - rz * sinA;
-        pt.z = feat.centerZ + rx * sinA + rz * cosA;
+        pt.x = feat.centerX + rx * cosA + rz * sinA;
+        pt.z = feat.centerZ - rx * sinA + rz * cosA;
       }
+      const b = computePolygonBounds(feat.contour);
+      feat.width = Math.max(2, b.width);
+      feat.length = Math.max(2, b.length);
     }
     if (isDraft) {
       this.applyFastDraftFeatureMove(featureIndex, oldBounds, feat);

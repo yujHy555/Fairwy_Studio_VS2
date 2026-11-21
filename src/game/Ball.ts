@@ -186,7 +186,8 @@ export class Ball {
     this.tracerMaterial.alpha = 1.0;
     this.tracerMaterial.transparencyMode = Material.MATERIAL_ALPHABLEND;
     this.tracerMaterial.backFaceCulling = false;
-    this.tracerMaterial.zOffset = -3;
+    this.tracerMaterial.disableDepthWrite = true;
+    this.tracerMaterial.zOffset = -8;
 
     const maxVerts = Ball.MAX_TRACER_POINTS * 2;
     this.tracerPositions = new Float32Array(maxVerts * 3);
@@ -1156,7 +1157,7 @@ export class Ball {
 
     const lastAnchor = this.tracerPoints[this.tracerPoints.length - 1];
     const distFromLast = Vector3.Distance(lastAnchor, pt);
-    const minSpacing = forceImpact ? 0.14 : 0.42;
+    const minSpacing = forceImpact ? 0.12 : 0.24;
 
     if (distFromLast >= minSpacing && this.tracerPoints.length < Ball.MAX_TRACER_POINTS - 2) {
       this.tracerPoints.push(pt.clone());
@@ -1185,25 +1186,36 @@ export class Ball {
       return;
     }
 
-    const path: Vector3[] = [];
+    this.tracerMesh.renderingGroupId = 1;
+    const rawPath: Vector3[] = [];
     for (let i = 0; i < pts.length; i++) {
-      const p = pts[i];
-      const gy = this.terrain.getElevation(p.x, p.z);
-      const minY = gy + 0.11;
-      path.push(p.y < minY ? new Vector3(p.x, minY, p.z) : p);
+      rawPath.push(pts[i]);
     }
 
-    const rawTip = this.tracerLiveTip || this.mesh.position;
-    const tipGy = this.terrain.getElevation(rawTip.x, rawTip.z);
-    const tip = rawTip.y < tipGy + 0.11 ? new Vector3(rawTip.x, tipGy + 0.11, rawTip.z) : rawTip;
-    const lastCommitted = path[path.length - 1];
+    const tip = this.tracerLiveTip || this.mesh.position;
+    const lastCommitted = rawPath[rawPath.length - 1];
     const tipDist = Vector3.Distance(lastCommitted, tip);
     if (tipDist > 0.04) {
       // Stop leading tip cleanly behind the golf ball surface so the ball renders crisp in front
       const gapBehindBall = Math.min(tipDist * 0.45, GOLF_CONSTANTS.BALL_RENDER_RADIUS * 1.65);
       const dir = tip.subtract(lastCommitted);
       const len = dir.length() || 1;
-      path.push(tip.subtract(dir.scale(gapBehindBall / len)));
+      rawPath.push(tip.subtract(dir.scale(gapBehindBall / len)));
+    }
+
+    // 1-pass Chaikin corner-cutting subdivision for silky-smooth AAA broadcast curves
+    const path: Vector3[] = [];
+    if (rawPath.length >= 3) {
+      path.push(rawPath[0]);
+      for (let i = 0; i < rawPath.length - 1; i++) {
+        const a = rawPath[i];
+        const b = rawPath[i + 1];
+        if (i > 0) path.push(Vector3.Lerp(a, b, 0.25));
+        if (i < rawPath.length - 2) path.push(Vector3.Lerp(a, b, 0.75));
+      }
+      path.push(rawPath[rawPath.length - 1]);
+    } else {
+      for (let i = 0; i < rawPath.length; i++) path.push(rawPath[i]);
     }
 
     const count = Math.min(path.length, Ball.MAX_TRACER_POINTS);
