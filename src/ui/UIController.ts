@@ -28,6 +28,7 @@ import { KyalamiHoleGuide, KYALAMI_COURSE_GUIDE } from '../data/KyalamiCourseDat
 
 export interface OutlinerItem {
   id: string;
+  parentId?: string;
   name: string;
   category: 'markers' | 'architecture' | 'foliage' | 'rocks' | 'prop';
   icon: string;
@@ -753,7 +754,7 @@ export class UIController {
                 <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
                 <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Click to aim shot • Drag to measure distance • Double-click to clear"></canvas>
               </div>
-              <canvas id="overhead-hole-canvas" width="516" height="540"></canvas>
+              <canvas id="overhead-hole-canvas" width="536" height="620"></canvas>
             </div>
 
             <!-- Yardage Readout & Elevation Delta Footer -->
@@ -1645,12 +1646,8 @@ export class UIController {
                 <input type="range" id="input-hdri-intensity" min="0.1" max="2.5" step="0.05" value="0.65" />
               </div>
               <div class="dock-slider-row">
-                <label>HDRI UV Scale (Width) <span id="val-hdri-uv-scale">1.00</span></label>
+                <label>HDRI Texture UV Scale <span id="val-hdri-uv-scale">1.00</span></label>
                 <input type="range" id="input-hdri-uv-scale" min="0.05" max="10.0" step="0.05" value="1.0" />
-              </div>
-              <div class="dock-slider-row">
-                <label>HDRI UV Scale (Height) <span id="val-hdri-uv-scale-v">1.00</span></label>
-                <input type="range" id="input-hdri-uv-scale-v" min="0.10" max="4.0" step="0.05" value="1.0" />
               </div>
               <div class="dock-slider-row">
                 <label>UV Offset (Width) <span id="val-hdri-uv-offset-u">0.00</span></label>
@@ -5620,7 +5617,7 @@ export class UIController {
 
     for (const item of filtered) {
       const row = document.createElement('div');
-      row.className = 'outliner-row';
+      row.className = item.parentId ? 'outliner-row is-child' : 'outliner-row';
       row.dataset.id = item.id;
 
       const isFeature = item.featureIndex !== undefined;

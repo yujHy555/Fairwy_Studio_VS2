@@ -216,6 +216,7 @@ class FairwayStudioApp {
   private anamorphicPostProcess: PostProcess | null = null;
   private solidViewOriginalMats = new Map<AbstractMesh, Material | null>();
   private solidClayMats: Record<string, StandardMaterial> = {};
+  private userOverrodeGreenOverlays = false;
   private groundSelectionOutline: LinesMesh | null = null;
   private objectSelectionOutline: LinesMesh | null = null;
   private playFreezeTimerId: number | null = null;
@@ -1689,11 +1690,15 @@ class FairwayStudioApp {
         return this.toggle1mGrid();
       },
       onToggleGreenGrid: () => {
+        this.userOverrodeGreenOverlays = true;
         this.autoEnabledGreenOverlays = false;
+        this.greenVisualizer.ensureBuilt();
         return this.greenVisualizer.toggleGrid();
       },
       onToggleGreenDots: () => {
+        this.userOverrodeGreenOverlays = true;
         this.autoEnabledGreenOverlays = false;
+        this.greenVisualizer.ensureBuilt();
         return this.greenVisualizer.toggleDots();
       },
       onExportCourse: () => {
@@ -2396,7 +2401,8 @@ class FairwayStudioApp {
       club: this.activeClub,
       terrainWidth: this.terrain.width,
       terrainLength: this.terrain.length,
-      strokes: this.courseManager.currentStrokes
+      strokes: this.courseManager.currentStrokes,
+      satelliteImageUrl: this.terrain.satellitePreviewDataUrl || undefined
     });
 
     const hole = this.courseManager.currentHole;
@@ -4780,6 +4786,20 @@ class FairwayStudioApp {
 
     if (this.ball.state === BallState.IN_FLIGHT || this.ball.state === BallState.ROLLING) {
       this.ui.updateShotStats(this.ball.carryDistance, this.ball.totalDistance, false);
+      // Stream live ball position to Overhead 3D Radar & Graphic views in real time!
+      this.ui.updateOverheadLayout({
+        hole: this.courseManager.currentHole,
+        ballPos: this.ball.position,
+        pinPos: this.courseManager.currentHole.pinPosition,
+        aimTargetPos: this.aimSystem ? this.aimSystem.targetPosition : undefined,
+        aimAzimuthDeg: this.currentAimAzimuth,
+        features: this.terrain.stampedFeatures,
+        club: this.activeClub,
+        terrainWidth: this.terrain.width,
+        terrainLength: this.terrain.length,
+        strokes: this.courseManager.currentStrokes,
+        satelliteImageUrl: this.terrain.satellitePreviewDataUrl || undefined
+      });
     }
 
     if (this.cameraCtrl.mode === 'flight') {
@@ -4808,13 +4828,15 @@ class FairwayStudioApp {
       (this.cameraCtrl.mode === 'green' || (this.cameraCtrl.mode === 'aim' && (isOnGreen || this.activeClub.category === 'putter')));
 
     if (isPuttingShotView) {
-      if (!this.wasSettledOnGreen || !this.autoEnabledGreenOverlays) {
+      if (!this.wasSettledOnGreen && !this.userOverrodeGreenOverlays) {
+        this.greenVisualizer.ensureBuilt();
         this.greenVisualizer.setGridVisible(true);
         this.greenVisualizer.setDotsVisible(true);
         this.ui.setGreenToggleStates(true, true);
         this.autoEnabledGreenOverlays = true;
       }
     } else {
+      this.userOverrodeGreenOverlays = false;
       if (this.autoEnabledGreenOverlays) {
         this.greenVisualizer.setVisible(false);
         this.ui.setGreenToggleStates(false, false);
@@ -5207,7 +5229,7 @@ class FairwayStudioApp {
     const rotDeg = this.currentEnvSettings.hdriRotation || 0;
     const rotRad = (rotDeg * Math.PI) / 180;
     const scaleU = Math.max(0.05, this.currentEnvSettings.hdriScaleU ?? 1.0);
-    const scaleV = Math.max(0.05, this.currentEnvSettings.hdriScaleV ?? 1.0);
+    const scaleV = scaleU;
     const offsetU = this.currentEnvSettings.hdriOffsetU ?? 0.0;
     const offsetV = this.currentEnvSettings.hdriOffsetV ?? 0.0;
 
@@ -5249,19 +5271,60 @@ class FairwayStudioApp {
   private refreshOutliner() {
     const items: OutlinerItem[] = [];
 
-    // 1. Hole Markers
+    // 1. Hole Markers (with clean Parent -> Child hierarchy for Tee Box Unit & its components)
     const hole = this.courseManager.currentHole;
     if (this.courseManager.activeTeeMesh) {
+      const teeRoot = this.courseManager.activeTeeMesh;
       items.push({
         id: 'marker_tee',
-        name: `Hole #${hole.number} Tee Box Marker`,
+        name: `Hole #${hole.number} Tee Unit (Group)`,
         category: 'markers',
         icon: '🏌️',
         posX: hole.teePosition.x,
         posZ: hole.teePosition.z,
-        isVisible: this.courseManager.activeTeeMesh.isVisible,
-        meshId: this.courseManager.activeTeeMesh.id
+        isVisible: teeRoot.isVisible,
+        meshId: teeRoot.id
       });
+      if (this.ball && this.ball.mesh && !this.ball.mesh.isDisposed()) {
+        items.push({
+          id: 'marker_golf_ball',
+          parentId: 'marker_tee',
+          name: 'Golf Ball',
+          category: 'markers',
+          icon: '⚪',
+          posX: this.ball.position.x,
+          posZ: this.ball.position.z,
+          isVisible: this.ball.mesh.isVisible,
+          meshId: this.ball.mesh.id
+        });
+      }
+      const teeChildren = teeRoot.getChildMeshes(true);
+      let markerIdx = 0;
+      for (const child of teeChildren) {
+        if (!child || child.isDisposed()) continue;
+        const cname = (child.name || '').toLowerCase();
+        const isArrow = cname.includes('arrow') || cname.includes('dir');
+        const label = isArrow
+          ? 'Aim Direction Arrow'
+          : markerIdx === 0
+          ? 'Left Tee Marker'
+          : markerIdx === 1
+          ? 'Right Tee Marker'
+          : `Tee Component ${markerIdx + 1}`;
+        if (!isArrow) markerIdx++;
+        const absPos = child.getAbsolutePosition();
+        items.push({
+          id: `marker_tee_child_${child.uniqueId}`,
+          parentId: 'marker_tee',
+          name: label,
+          category: 'markers',
+          icon: isArrow ? '➡️' : '🟠',
+          posX: absPos.x,
+          posZ: absPos.z,
+          isVisible: child.isVisible,
+          meshId: child.id
+        });
+      }
     }
     if (this.courseManager.activePinMesh) {
       items.push({
@@ -5273,18 +5336,6 @@ class FairwayStudioApp {
         posZ: hole.pinPosition.z,
         isVisible: this.courseManager.activePinMesh.isVisible,
         meshId: this.courseManager.activePinMesh.id
-      });
-    }
-    if (this.ball && this.ball.mesh && !this.ball.mesh.isDisposed()) {
-      items.push({
-        id: 'marker_golf_ball',
-        name: 'Golf Ball',
-        category: 'markers',
-        icon: '⚪',
-        posX: this.ball.position.x,
-        posZ: this.ball.position.z,
-        isVisible: this.ball.mesh.isVisible,
-        meshId: this.ball.mesh.id
       });
     }
 
@@ -5421,11 +5472,14 @@ class FairwayStudioApp {
       }
     }
 
-    const margin = 280;
+    const margin = 700;
     minX = Math.max(0, minX - margin);
     maxX = Math.min(this.terrain.width, maxX + margin);
     minZ = Math.max(0, minZ - margin);
     maxZ = Math.min(this.terrain.length, maxZ + margin);
+    if (this.cameraCtrl?.camera) {
+      this.cameraCtrl.camera.maxZ = Math.max(50000, Math.max(this.terrain.width, this.terrain.length) * 20);
+    }
 
     for (const f of this.terrain.stampedFeatures) {
       const isPrimaryAnchor = f.surfaceType === SurfaceType.TEE || f.surfaceType === SurfaceType.GREEN;

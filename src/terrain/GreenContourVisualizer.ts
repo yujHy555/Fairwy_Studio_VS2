@@ -36,7 +36,11 @@ export class GreenContourVisualizer {
 
   private comets: SlopeComet[] = [];
   private beadParent: Mesh;
-  private cometTemplate: Mesh | null = null;
+  private tplFlat: Mesh | null = null;
+  private tplMild: Mesh | null = null;
+  private tplMed: Mesh | null = null;
+  private tplSteep: Mesh | null = null;
+  private matFlat: StandardMaterial;
   private matMild: StandardMaterial;
   private matMed: StandardMaterial;
   private matSteep: StandardMaterial;
@@ -54,21 +58,23 @@ export class GreenContourVisualizer {
     this.beadParent.scaling.set(1, 1, 1);
     this.beadParent.setEnabled(false);
 
-    // Color-coded luminous materials for slope comets (Mild = Lime/Cyan, Medium = Gold, Steep = Coral Red)
-    this.matMild = new StandardMaterial('slopeBeadMild', this.scene);
-    this.matMild.emissiveColor = new Color3(0.35, 1.0, 0.55);
-    this.matMild.disableLighting = true;
-    this.matMild.alpha = 0.0;
+    // Next-Gen 4-tier luminous pearl materials (Ice-Cyan = subtle, Emerald = gentle, Gold = medium, Coral-Red = steep)
+    const makePearlMat = (name: string, diff: Color3, emis: Color3): StandardMaterial => {
+      const m = new StandardMaterial(name, this.scene);
+      m.diffuseColor = diff;
+      m.emissiveColor = emis;
+      m.specularColor = new Color3(0.95, 0.98, 1.0);
+      m.specularPower = 64;
+      m.disableLighting = false;
+      m.alpha = 0.0;
+      m.backFaceCulling = true;
+      return m;
+    };
 
-    this.matMed = new StandardMaterial('slopeBeadMed', this.scene);
-    this.matMed.emissiveColor = new Color3(1.0, 0.88, 0.20);
-    this.matMed.disableLighting = true;
-    this.matMed.alpha = 0.0;
-
-    this.matSteep = new StandardMaterial('slopeBeadSteep', this.scene);
-    this.matSteep.emissiveColor = new Color3(1.0, 0.35, 0.15);
-    this.matSteep.disableLighting = true;
-    this.matSteep.alpha = 0.0;
+    this.matFlat = makePearlMat('slopeBeadFlat', new Color3(0.55, 0.92, 1.0), new Color3(0.28, 0.68, 0.85));
+    this.matMild = makePearlMat('slopeBeadMild', new Color3(0.22, 0.96, 0.50), new Color3(0.14, 0.72, 0.34));
+    this.matMed = makePearlMat('slopeBeadMed', new Color3(1.0, 0.84, 0.16), new Color3(0.86, 0.64, 0.08));
+    this.matSteep = makePearlMat('slopeBeadSteep', new Color3(1.0, 0.30, 0.14), new Color3(0.92, 0.22, 0.08));
 
     this.rebuildSlopeGrid();
 
@@ -108,9 +114,16 @@ export class GreenContourVisualizer {
       this.beadParent.setEnabled(false);
     } else {
       this.beadParent.setEnabled(true);
+      this.matFlat.alpha = this.dotsAlpha;
       this.matMild.alpha = this.dotsAlpha;
       this.matMed.alpha = this.dotsAlpha;
       this.matSteep.alpha = this.dotsAlpha;
+    }
+  }
+
+  public ensureBuilt() {
+    if (!this.contourLineGrid || this.comets.length === 0) {
+      this.rebuildSlopeGrid();
     }
   }
 
@@ -315,14 +328,24 @@ export class GreenContourVisualizer {
     }
 
     // 3. Synchronized Downhill Comet Beads (placed at 2.0m intervals for crystal-clear reading)
-    // Instanced GPU spheres for high-performance slope reading
-    if (!this.cometTemplate || this.cometTemplate.isDisposed()) {
-      this.cometTemplate = MeshBuilder.CreateSphere('cometTemplate', { diameter: 0.16, segments: 8 }, this.scene);
-      this.cometTemplate.isVisible = false;
-      this.cometTemplate.isPickable = false;
-      this.cometTemplate.position.set(0, -9999, 0);
-    }
-    const templateSphere = this.cometTemplate;
+    // 4 dedicated tier templates so Babylon GPU InstancedMesh renders true 4-tier color-coded pearl shading!
+    const ensureTierTemplate = (existing: Mesh | null, name: string, mat: StandardMaterial): Mesh => {
+      if (existing && !existing.isDisposed()) {
+        existing.material = mat;
+        return existing;
+      }
+      const m = MeshBuilder.CreateSphere(name, { diameter: 0.15, segments: 12 }, this.scene);
+      m.material = mat;
+      m.isVisible = false;
+      m.isPickable = false;
+      m.renderingGroupId = 1;
+      m.position.set(0, -9999, 0);
+      return m;
+    };
+    this.tplFlat = ensureTierTemplate(this.tplFlat, 'cometTplFlat', this.matFlat);
+    this.tplMild = ensureTierTemplate(this.tplMild, 'cometTplMild', this.matMild);
+    this.tplMed = ensureTierTemplate(this.tplMed, 'cometTplMed', this.matMed);
+    this.tplSteep = ensureTierTemplate(this.tplSteep, 'cometTplSteep', this.matSteep);
 
     const dotSpacing = 2.0;
     for (let z = minZ + 0.75; z <= maxZ; z += dotSpacing) {
@@ -338,18 +361,21 @@ export class GreenContourVisualizer {
             const dirX = slopeX / slopeMag;
             const dirZ = slopeZ / slopeMag;
 
-            const mat = slopeMag < 0.032 ? this.matMild : slopeMag < 0.060 ? this.matMed : this.matSteep;
+            const tpl =
+              slopeMag < 0.012
+                ? this.tplFlat
+                : slopeMag < 0.032
+                ? this.tplMild
+                : slopeMag < 0.060
+                ? this.tplMed
+                : this.tplSteep;
 
-            const headMesh = templateSphere.createInstance(`comet_h_${x}_${z}`);
+            const headMesh = tpl.createInstance(`comet_h_${x}_${z}`);
             headMesh.parent = this.beadParent;
-            const midMesh = templateSphere.createInstance(`comet_m_${x}_${z}`);
+            const midMesh = tpl.createInstance(`comet_m_${x}_${z}`);
             midMesh.parent = this.beadParent;
-            const tailMesh = templateSphere.createInstance(`comet_t_${x}_${z}`);
+            const tailMesh = tpl.createInstance(`comet_t_${x}_${z}`);
             tailMesh.parent = this.beadParent;
-
-            headMesh.material = mat;
-            midMesh.material = mat;
-            tailMesh.material = mat;
 
             headMesh.renderingGroupId = 1;
             midMesh.renderingGroupId = 1;
@@ -382,7 +408,7 @@ export class GreenContourVisualizer {
       }
     }
 
-    // Keep cometTemplate alive (invisible) so all InstancedMesh slope dots remain active and visible!
+    // Keep tier templates alive (hidden) so all GPU InstancedMesh pearls remain rendered!
     this.beadParent.setEnabled(this.dotsAlpha > 0.005);
     this.updateComets(0.016);
   }

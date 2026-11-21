@@ -14,6 +14,7 @@ export interface OverheadLayoutData {
   terrainWidth: number;
   terrainLength: number;
   strokes: number;
+  satelliteImageUrl?: string;
 }
 
 export class OverheadHoleLayout {
@@ -403,9 +404,11 @@ export class OverheadHoleLayout {
   private viewCenterZ: number = 0;
   private viewAngle: number = 0; // rotation to align hole vertically
   private viewScale: number = 1.0;
-  private canvasWidth: number = 516;
-  private canvasHeight: number = 540;
+  private canvasWidth: number = 536;
+  private canvasHeight: number = 620;
   private rotMinZ: number = 0;
+  private satImg: HTMLImageElement | null = null;
+  private satImgUrl: string = '';
 
   // Tooltip
   private tooltipEl: HTMLElement | null = null;
@@ -602,8 +605,7 @@ export class OverheadHoleLayout {
 
   private computeViewport() {
     if (!this.lastData) return;
-    const tee = this.lastData.hole.teePosition;
-    const pin = this.lastData.hole.pinPosition;
+    const { tee, pin } = this.getEffectiveTeeAndPin();
     const ball = this.lastData.ballPos;
 
     // Angle of vector from Tee to Pin
@@ -639,17 +641,57 @@ export class OverheadHoleLayout {
     this.viewScale = Math.min(scaleX, scaleZ);
   }
 
+  private getEffectiveTeeAndPin(): { tee: { x: number; z: number }; pin: { x: number; z: number } } {
+    const data = this.lastData!;
+    let tee = { x: data.hole.teePosition.x, z: data.hole.teePosition.z };
+    let pin = { x: data.pinPos.x, z: data.pinPos.z };
+
+    // Dynamically recognize user-added Tee Box and Green features so 3D Radar & aiming stay synced!
+    const teeFeat = data.features.find((f) => f.surfaceType === SurfaceType.TEE);
+    if (teeFeat && !data.hole.hasCustomTeePosition) {
+      const distTee = Math.hypot(teeFeat.centerX - tee.x, teeFeat.centerZ - tee.z);
+      if (distTee > 25) {
+        tee = { x: teeFeat.centerX, z: teeFeat.centerZ };
+      }
+    }
+    const greenFeat = data.features.find((f) => f.surfaceType === SurfaceType.GREEN);
+    if (greenFeat) {
+      const distPin = Math.hypot(greenFeat.centerX - pin.x, greenFeat.centerZ - pin.z);
+      if (distPin > Math.max(greenFeat.width, greenFeat.length) * 0.75 + 15) {
+        pin = { x: greenFeat.centerX, z: greenFeat.centerZ };
+      }
+    }
+    return { tee, pin };
+  }
+
+  private ensureSatelliteImageLoaded(url?: string) {
+    if (!url) return;
+    if (this.satImgUrl === url) return;
+    this.satImgUrl = url;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      if (this.satImgUrl === url) {
+        this.satImg = img;
+        this.render();
+      }
+    };
+    img.src = url;
+  }
+
   private render() {
     const ctx = this.ctx;
     if (!ctx || !this.lastData) return;
 
+    this.ensureSatelliteImageLoaded(this.lastData.satelliteImageUrl);
     this.computeViewport();
 
     const W = this.canvasWidth;
     const H = this.canvasHeight;
     const data = this.lastData;
+    const { tee: effTee, pin: effPin } = this.getEffectiveTeeAndPin();
 
-    // 1. TRIPLE-AAA Broadcast Deep Rough & Topographic Contour Backdrop
+    // 1. TRIPLE-AAA Broadcast Deep Rough & Topographic Contour Backdrop (or synced Imported Satellite Terrain!)
     ctx.clearRect(0, 0, W, H);
     const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.44, 18, W * 0.5, H * 0.5, Math.max(W, H) * 0.72);
     bgGrad.addColorStop(0, '#173620');
@@ -657,6 +699,24 @@ export class OverheadHoleLayout {
     bgGrad.addColorStop(1, '#07120b');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
+
+    // Draw imported MapNG satellite/terrain texture synced 1:1 with the rotated hole corridor!
+    if (this.satImg && this.satImg.complete && this.satImg.naturalWidth > 0 && data.terrainWidth > 0 && data.terrainLength > 0) {
+      ctx.save();
+      const padBottom = 36;
+      const originC = this.worldToCanvas(0, 0);
+      const axisXC = this.worldToCanvas(data.terrainWidth, 0);
+      const axisZC = this.worldToCanvas(0, data.terrainLength);
+      const a = (axisXC.x - originC.x) / data.terrainWidth;
+      const b = (axisXC.y - originC.y) / data.terrainWidth;
+      const c = (axisZC.x - originC.x) / data.terrainLength;
+      const d = (axisZC.y - originC.y) / data.terrainLength;
+      ctx.globalAlpha = 0.86;
+      ctx.transform(a, b, c, d, originC.x, originC.y);
+      ctx.drawImage(this.satImg, 0, 0, data.terrainWidth, data.terrainLength);
+      ctx.restore();
+      void padBottom;
+    }
 
     // Subtle organic topographic contour bands for AAA architectural depth
     ctx.save();
@@ -696,7 +756,7 @@ export class OverheadHoleLayout {
     }
 
     // 2. Distance Arcs from the PIN (PGA Tour Broadcast Yardage Rings)
-    const pinPt = this.worldToCanvas(data.pinPos.x, data.pinPos.z);
+    const pinPt = this.worldToCanvas(effPin.x, effPin.z);
     const arcDistances = [50, 100, 150, 200, 250];
 
     for (const d of arcDistances) {
@@ -725,7 +785,7 @@ export class OverheadHoleLayout {
     }
 
     // 4. Tee Marker Box
-    const teePt = this.worldToCanvas(data.hole.teePosition.x, data.hole.teePosition.z);
+    const teePt = this.worldToCanvas(effTee.x, effTee.z);
     ctx.save();
     ctx.fillStyle = '#f8fafc';
     ctx.strokeStyle = '#00ffcc';
