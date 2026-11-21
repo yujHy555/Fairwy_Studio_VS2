@@ -946,11 +946,16 @@ class FairwayStudioApp {
     const pin = hole.pinPosition;
     this.ball.setTargetPin(pin);
 
-    // On dogleg holes, aim initial tee shot down the fairway toward the first dogleg landing waypoint
-    const initialTarget = (hole.waypoints && hole.waypoints.length > 0) ? hole.waypoints[0] : pin;
-    const aimDx = initialTarget.x - tee.x;
-    const aimDz = initialTarget.z - tee.z;
-    this.currentAimAzimuth = (Math.atan2(aimDx, aimDz) * 180) / Math.PI;
+    // If the architect rotated the Tee Box or Tee Markers/Arrow group, align initial shot & camera to it;
+    // otherwise face the first dogleg landing waypoint or pin.
+    if (hole.customTeeHeadingRad !== undefined) {
+      this.currentAimAzimuth = (hole.customTeeHeadingRad * 180) / Math.PI;
+    } else {
+      const initialTarget = (hole.waypoints && hole.waypoints.length > 0) ? hole.waypoints[0] : pin;
+      const aimDx = initialTarget.x - tee.x;
+      const aimDz = initialTarget.z - tee.z;
+      this.currentAimAzimuth = (Math.atan2(aimDx, aimDz) * 180) / Math.PI;
+    }
     this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
 
     if (this.activeMode === 'play') {
@@ -1267,6 +1272,35 @@ class FairwayStudioApp {
       },
       onSatelliteOpacityChange: (opacity) => {
         this.setSatelliteOverlayOpacity(opacity);
+      },
+      onHeightmapStrengthChange: (strength) => {
+        const applied = this.terrain.setHeightmapStrength(strength);
+        if (!applied) {
+          this.ui.showToast('Import a MapNG course terrain first to adjust Heightmap Strength', 'info', 2200);
+          return;
+        }
+        const hole = this.courseManager.currentHole;
+        if (hole) {
+          hole.teePosition.y = this.terrain.getElevation(hole.teePosition.x, hole.teePosition.z);
+          hole.pinPosition.y = this.terrain.getElevation(hole.pinPosition.x, hole.pinPosition.z);
+          if (this.courseManager.activeTeeMesh) {
+            this.courseManager.activeTeeMesh.position.y = hole.teePosition.y;
+          }
+          if (this.courseManager.activePinMesh) {
+            this.courseManager.activePinMesh.position.y = hole.pinPosition.y;
+          }
+          if (this.ball && this.courseManager.currentStrokes === 0) {
+            this.ball.setPosition(hole.teePosition.x, hole.teePosition.y + GOLF_CONSTANTS.BALL_RENDER_RADIUS, hole.teePosition.z);
+          }
+        }
+        for (const m of this.courseManager.getSceneryMeshes()) {
+          if (m && !m.isDisposed() && !m.name.startsWith('water_')) {
+            m.position.y = this.terrain.getElevation(m.position.x, m.position.z);
+          }
+        }
+        this.update1mGridMesh();
+        this.greenVisualizer?.rebuildSlopeGrid();
+        this.refreshShadowsAndMaterials(false);
       },
       onTopDownTraceCam: () => {
         if (this.activeMode === 'designer') {
@@ -2853,6 +2887,8 @@ class FairwayStudioApp {
         this.selectedMesh.rotation.set(0, teeYaw, 0);
         this.currentAimAzimuth = (teeYaw * 180) / Math.PI;
         this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
+        this.courseManager.currentHole.customTeeHeadingRad = teeYaw;
+        this.courseManager.currentHole.hasCustomTeePosition = true;
         this.courseManager.currentHole.teePosition.x = p.x;
         this.courseManager.currentHole.teePosition.y = groundY;
         this.courseManager.currentHole.teePosition.z = p.z;
@@ -3399,6 +3435,10 @@ class FairwayStudioApp {
       activeHole.teePosition.x = feat.centerX;
       activeHole.teePosition.z = feat.centerZ;
       activeHole.teePosition.y = this.terrain.getElevation(feat.centerX, feat.centerZ);
+      activeHole.customTeeHeadingRad = -feat.rotationRad;
+      activeHole.hasCustomTeePosition = false;
+      this.currentAimAzimuth = (-feat.rotationRad * 180) / Math.PI;
+      this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
       if (this.courseManager.activeTeeMesh) {
         this.courseManager.activeTeeMesh.position.set(feat.centerX, activeHole.teePosition.y, feat.centerZ);
         this.courseManager.activeTeeMesh.rotationQuaternion = null;

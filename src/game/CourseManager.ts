@@ -687,26 +687,30 @@ export class CourseManager {
       }
     }
 
-    const elev = this.terrain.getElevation(bestTee.centerX, bestTee.centerZ);
-    hole.teePosition.x = bestTee.centerX;
+    const teeX = hole.hasCustomTeePosition ? hole.teePosition.x : bestTee.centerX;
+    const teeZ = hole.hasCustomTeePosition ? hole.teePosition.z : bestTee.centerZ;
+    const elev = this.terrain.getElevation(teeX, teeZ);
+    hole.teePosition.x = teeX;
     hole.teePosition.y = elev;
-    hole.teePosition.z = bestTee.centerZ;
+    hole.teePosition.z = teeZ;
 
     if (!this.activeTeeMesh || this.activeTeeMesh.isDisposed()) {
-      this.activeTeeMesh = this.scenery.createTeeMarkers(bestTee.centerX, elev, bestTee.centerZ, hole.pinPosition.x, hole.pinPosition.z);
+      this.activeTeeMesh = this.scenery.createTeeMarkers(teeX, elev, teeZ, hole.pinPosition.x, hole.pinPosition.z);
     } else {
       this.activeTeeMesh.unfreezeWorldMatrix();
-      this.activeTeeMesh.position.set(bestTee.centerX, elev, bestTee.centerZ);
+      this.activeTeeMesh.position.set(teeX, elev, teeZ);
       this.activeTeeMesh.setEnabled(true);
       this.activeTeeMesh.isVisible = true;
-      const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
-      const defaultHeadingRad = Math.atan2(targetPt.x - bestTee.centerX, targetPt.z - bestTee.centerZ);
-      const hasCustomRot = Math.abs(bestTee.rotationRad || 0) > 0.001;
-      const finalYaw = hasCustomRot ? -bestTee.rotationRad : defaultHeadingRad;
-      this.activeTeeMesh.rotationQuaternion = null;
-      this.activeTeeMesh.rotation.set(0, finalYaw, 0);
     }
     if (this.activeTeeMesh) {
+      const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
+      const defaultHeadingRad = Math.atan2(targetPt.x - teeX, targetPt.z - teeZ);
+      const finalYaw =
+        hole.customTeeHeadingRad !== undefined
+          ? hole.customTeeHeadingRad
+          : (Math.abs(bestTee.rotationRad || 0) > 0.001 ? -bestTee.rotationRad : defaultHeadingRad);
+      this.activeTeeMesh.rotationQuaternion = null;
+      this.activeTeeMesh.rotation.set(0, finalYaw, 0);
       this.activeTeeMesh.alwaysSelectAsActiveMesh = true;
       this.activeTeeMesh.computeWorldMatrix(true);
       this.activeTeeMesh.refreshBoundingInfo({});

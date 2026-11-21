@@ -70,6 +70,8 @@ export interface GolfHole {
   par: 3 | 4 | 5;
   name: string;
   isDemo?: boolean;
+  customTeeHeadingRad?: number;
+  hasCustomTeePosition?: boolean;
   strokeIndex?: number;
   distances?: {
     yellow: number;

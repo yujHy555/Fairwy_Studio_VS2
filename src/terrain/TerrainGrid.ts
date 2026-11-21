@@ -1882,6 +1882,9 @@ export class TerrainGrid {
   public gridX: number = 220;
   public gridZ: number = 460;
   public playCorridorBounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
+  private rawImportedBaseHeights: Float32Array | null = null;
+  private rawImportedMinElev: number = 0;
+  public heightmapStrength: number = 1.0;
 
   /**
    * Rewrites legacy/pre-Stage-1 2K/missing texture paths to the current 1K/512 PBR assets
@@ -3427,6 +3430,26 @@ export class TerrainGrid {
     this.rebuildMesh(false);
   }
 
+  public setHeightmapStrength(scale: number): boolean {
+    const clamped = Math.max(0.1, Math.min(3.0, scale));
+    this.heightmapStrength = clamped;
+    if (!this.rawImportedBaseHeights || this.rawImportedBaseHeights.length !== this.baseHeights.length) {
+      return false;
+    }
+    const baseMin = this.rawImportedMinElev;
+    for (let i = 0; i < this.baseHeights.length; i++) {
+      this.baseHeights[i] = baseMin + (this.rawImportedBaseHeights[i] - baseMin) * clamped;
+    }
+    this.setPristineNaturalHeights(this.baseHeights);
+    this.heights.set(this.baseHeights);
+    this.isBaseCourseDirty = true;
+    for (const f of this.stampedFeatures) {
+      f.baseElevation = this.getBaseElevation(f.centerX, f.centerZ);
+    }
+    this.rebuildMesh(false);
+    return true;
+  }
+
   public createFlatTerrain(
     elevation = 2.0,
     clearFeatures = true,
@@ -3527,6 +3550,13 @@ export class TerrainGrid {
   ) {
     this.resizeGrid(course.worldWidth, course.worldLength, course.cellSize, false);
     this.baseHeights.set(course.baseHeights);
+    this.rawImportedBaseHeights = new Float32Array(course.baseHeights);
+    let minH = Infinity;
+    for (let i = 0; i < course.baseHeights.length; i++) {
+      if (course.baseHeights[i] < minH) minH = course.baseHeights[i];
+    }
+    this.rawImportedMinElev = Number.isFinite(minH) ? minH : 0;
+    this.heightmapStrength = 1.0;
     this.setPristineNaturalHeights(course.baseHeights);
     this.heights.set(course.baseHeights);
     this.surfaceTypes.fill(SurfaceType.ROUGH);

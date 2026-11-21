@@ -159,6 +159,7 @@ export interface UIEventCallbacks {
   onToggleCourseGuide?: () => void;
   onToggleSatelliteOverlay?: () => void;
   onSatelliteOpacityChange?: (opacity: number) => void;
+  onHeightmapStrengthChange?: (strength: number) => void;
   onTopDownTraceCam?: () => void;
   onTraceModeChange?: (mode: TraceToolMode, surface: SurfaceType) => void;
   onTraceFinish?: () => void;
@@ -616,6 +617,11 @@ export class UIController {
           <div class="slider-control" style="margin-bottom: 8px;">
             <label>Ground ↔ Satellite Mix: <span id="val-satellite-opacity">0%</span></label>
             <input type="range" id="input-satellite-opacity" min="0" max="100" step="1" value="0" />
+          </div>
+
+          <div class="slider-control" style="margin-bottom: 8px;">
+            <label>Heightmap Strength: <span id="val-heightmap-strength">1.00x</span></label>
+            <input type="range" id="input-heightmap-strength" min="0.1" max="3.0" step="0.05" value="1.0" />
           </div>
 
           <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px; font-weight: 600;">Trace Surface Contour:</div>
@@ -6225,6 +6231,12 @@ export class UIController {
       const pct = Number((e.target as HTMLInputElement).value);
       this.syncSatelliteUi(pct);
       this.callbacks.onSatelliteOpacityChange?.(pct / 100);
+    });
+    document.getElementById('input-heightmap-strength')?.addEventListener('input', (e) => {
+      const val = Number((e.target as HTMLInputElement).value);
+      const lbl = document.getElementById('val-heightmap-strength');
+      if (lbl) lbl.innerText = `${val.toFixed(2)}x`;
+      this.callbacks.onHeightmapStrengthChange?.(val);
     });
 
     const getTraceSurf = (): SurfaceType => {
