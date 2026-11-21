@@ -143,7 +143,6 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
   public neutralNormalTex: RawTexture | null = null;
   public satelliteOverlayTex: BaseTexture | null = null;
   public tracedSdfTex: BaseTexture | null = null;
-  public tracedTeeSdfTex: BaseTexture | null = null;
 
   public satelliteOpacity: number = 0.0;
   public satelliteEnabled: boolean = false;
@@ -155,9 +154,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
   public tracedShowCollar: [number, number, number, number] = [1, 1, 1, 1];
   public tracedFairwayStripes: [number, number, number, number] = [1, 4.6, 0.5, 0];
   public tracedGreenStripes: [number, number, number, number] = [1, 1.8, 0.45, 0];
-  public tracedTeeBounds: [number, number, number, number] = [0, 0, 1, 1]; // minX, minZ, spanX, spanZ
+  public tracedTeeBounds: [number, number, number, number] = [0, 0, 0, 0]; // minX, minZ, maxX, maxZ
   public tracedTeeIds: [number, number, number, number] = [0, 0, 0.5, 0];  // surfId, fringeId, collarW, showCollar
   public tracedTeeStripes: [number, number, number, number] = [1, 1.6, 0.45, 0]; // show, width, contrast, rotRad
+  public tracedTeePolyCount: number = 0;
+  public tracedTeePolyArray: Float32Array = new Float32Array(40); // 10 * vec4(x0, z0, x1, z1) = 20 smooth vertices!
 
   public groundBaseColor: Color3 = Color3.FromHexString('#4c7426');
   public groundColorTexLevel: number = 1.0;
@@ -235,8 +236,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
       'featNormalSampler',
       'featRoughSampler',
       'satelliteOverlaySampler',
-      'tracedSdfSampler',
-      'tracedTeeSdfSampler'
+      'tracedSdfSampler'
     );
   }
 
@@ -252,7 +252,6 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
     if (this.featRoughTex) activeTextures.push(this.featRoughTex);
     if (this.satelliteOverlayTex) activeTextures.push(this.satelliteOverlayTex);
     if (this.tracedSdfTex) activeTextures.push(this.tracedSdfTex);
-    if (this.tracedTeeSdfTex) activeTextures.push(this.tracedTeeSdfTex);
   }
 
   hasTexture(texture: BaseTexture): boolean {
@@ -267,8 +266,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
       this.featNormalTex === texture ||
       this.featRoughTex === texture ||
       this.satelliteOverlayTex === texture ||
-      this.tracedSdfTex === texture ||
-      this.tracedTeeSdfTex === texture
+      this.tracedSdfTex === texture
     );
   }
 
@@ -305,7 +303,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
         { name: 'uTracedGreenStripes', size: 4, type: 'vec4' },
         { name: 'uTracedTeeBounds', size: 4, type: 'vec4' },
         { name: 'uTracedTeeIds', size: 4, type: 'vec4' },
-        { name: 'uTracedTeeStripes', size: 4, type: 'vec4' }
+        { name: 'uTracedTeeStripes', size: 4, type: 'vec4' },
+        { name: 'uTracedTeePoly', size: 4, type: 'vec4', arraySize: 10 }
       ]
     };
   }
@@ -462,9 +461,6 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
     const tSdfTex = this.pickReadyTex(this.tracedSdfTex, this.neutralRoughTex);
     if (tSdfTex) uniformBuffer.setTexture('tracedSdfSampler', tSdfTex);
 
-    const trTeeSdfTex = this.pickReadyTex(this.tracedTeeSdfTex, this.neutralRoughTex);
-    if (trTeeSdfTex) uniformBuffer.setTexture('tracedTeeSdfSampler', trTeeSdfTex);
-
     uniformBuffer.updateFloat4(
       'uTracedTeeBounds',
       this.tracedTeeBounds[0],
@@ -486,6 +482,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
       this.tracedTeeStripes[2],
       this.tracedTeeStripes[3]
     );
+    uniformBuffer.updateFloatArray('uTracedTeePoly', this.tracedTeePolyArray);
   }
 
   getCustomCode(shaderType: string) {
@@ -520,9 +517,30 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             uniform sampler2D featRoughSampler;
             uniform sampler2D satelliteOverlaySampler;
             uniform sampler2D tracedSdfSampler;
-            uniform sampler2D tracedTeeSdfSampler;
             varying vec2 vGroundColorUV;
             varying vec2 vRawTerrainUV;
+
+            // Zero-sampler analytical 20-vertex polygon SDF for spline-traced Tee Boxes (infinite precision!)
+            float evalTracedTeePolySDF(vec2 p) {
+              vec2 v[20];
+              for (int k = 0; k < 10; k++) {
+                vec4 pack = uTracedTeePoly[k];
+                v[k * 2] = pack.xy;
+                v[k * 2 + 1] = pack.zw;
+              }
+              float d = dot(p - v[0], p - v[0]);
+              float s = 1.0;
+              for (int i = 0; i < 20; i++) {
+                int j = (i == 0) ? 19 : (i - 1);
+                vec2 e = v[j] - v[i];
+                vec2 w = p - v[i];
+                vec2 b = w - e * clamp(dot(w, e) / max(1e-6, dot(e, e)), 0.0, 1.0);
+                d = min(d, dot(b, b));
+                bvec3 c = bvec3(p.y >= v[i].y, p.y < v[j].y, e.x * w.y > e.y * w.x);
+                if (all(c) || all(not(c))) s *= -1.0;
+              }
+              return s * sqrt(d);
+            }
 
             // Next-Gen GPU-Optimized Dual-Scale Rotated Anti-Tiling Sampler (only 2 texture taps = 60+ FPS, zero repeating grid seams!)
             vec3 sampleSeamlessTurf(sampler2D samp, vec2 uv) {
@@ -1247,12 +1265,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               }
             }
 
-            // Layer 0b-traced: High-Res Local-Bounds GPU SDF Spline Tee Boxes (10cm precision, matches Championship Tee Box!)
+            // Layer 0b-traced: Zero-Sampler Analytical 20-Vertex GPU Polygon SDF for Spline Tee Boxes (infinite resolution!)
             if (uTracedTeeIds.x > 0.5) {
               vec2 tWorldXZ = vec2(vRawTerrainUV.x * uTeeMeta.y, vRawTerrainUV.y * uTeeMeta.z);
-              vec2 tSdfUv = (tWorldXZ - uTracedTeeBounds.xy) / max(vec2(1.0), uTracedTeeBounds.zw);
-              if (tSdfUv.x >= 0.0 && tSdfUv.x <= 1.0 && tSdfUv.y >= 0.0 && tSdfUv.y <= 1.0) {
-                float dTrTee = texture2D(tracedTeeSdfSampler, tSdfUv).r * 32.0 - 16.0;
+              if (tWorldXZ.x >= uTracedTeeBounds.x && tWorldXZ.x <= uTracedTeeBounds.z && tWorldXZ.y >= uTracedTeeBounds.y && tWorldXZ.y <= uTracedTeeBounds.w) {
+                float dTrTee = evalTracedTeePolySDF(tWorldXZ);
                 applyTracedLayerCol(
                   dTrTee,
                   uTracedTeeIds.x,
@@ -1596,9 +1613,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
             if (uTracedTeeIds.x > 0.5) {
               vec2 tWorldXZSp = vec2(vRawTerrainUV.x * uTeeMeta.y, vRawTerrainUV.y * uTeeMeta.z);
-              vec2 tSdfUvSp = (tWorldXZSp - uTracedTeeBounds.xy) / max(vec2(1.0), uTracedTeeBounds.zw);
-              if (tSdfUvSp.x >= 0.0 && tSdfUvSp.x <= 1.0 && tSdfUvSp.y >= 0.0 && tSdfUvSp.y <= 1.0) {
-                float dTrTeeSp = texture2D(tracedTeeSdfSampler, tSdfUvSp).r * 32.0 - 16.0;
+              if (tWorldXZSp.x >= uTracedTeeBounds.x && tWorldXZSp.x <= uTracedTeeBounds.z && tWorldXZSp.y >= uTracedTeeBounds.y && tWorldXZSp.y <= uTracedTeeBounds.w) {
+                float dTrTeeSp = evalTracedTeePolySDF(tWorldXZSp);
                 applyTracedLayerRough(dTrTeeSp, uTracedTeeIds.x, uTracedTeeIds.y, uTracedTeeIds.z, uTracedTeeIds.w, vRawTerrainUV, hostRough, hostMet);
               }
             }
@@ -2029,8 +2045,6 @@ export class TerrainGrid {
   public overlayOverFeatures: number = 0.0;
   public tracedSdfTex: RawTexture | null = null;
   private tracedSdfData: Uint8Array | null = null;
-  public tracedTeeSdfTex: RawTexture | null = null;
-  private tracedTeeSdfData: Uint8Array | null = null;
   private hasAnyTracedSdf: boolean = false;
   public courseBoundaryMask: Uint8Array | null = null;
   public cellSize: number = 1;
@@ -3473,8 +3487,7 @@ export class TerrainGrid {
     plugin.tracedShowCollar = [1, 1, 1, 1];
     plugin.tracedTeeIds = [0, 0, 0.5, 0];
 
-    // High-res local-bounds GPU SDF for spline-traced Tee Boxes (256x256 = ~10cm precision!)
-    const tracedTees: { featIdx: number; contour: PolygonPoint[]; minX: number; maxX: number; minZ: number; maxZ: number }[] = [];
+    // Zero-sampler analytical 20-vertex GPU polygon SDF for spline-traced Tee Boxes (infinite precision, 0 extra texture units!)
     for (let featIdx = 0; featIdx < this.stampedFeatures.length; featIdx++) {
       const feat = this.stampedFeatures[featIdx];
       if (!feat.contour || feat.contour.length < 3 || feat.surfaceType !== SurfaceType.TEE) continue;
@@ -3492,62 +3505,23 @@ export class TerrainGrid {
         feat.rotationRad || 0
       ];
       const b = computePolygonBounds(feat.contour);
-      tracedTees.push({ featIdx, contour: feat.contour, minX: b.minX - 6, maxX: b.maxX + 6, minZ: b.minZ - 6, maxZ: b.maxZ + 6 });
-    }
+      const pad = Math.max(3.0, collarW + 2.5);
+      plugin.tracedTeeBounds = [b.minX - pad, b.minZ - pad, b.maxX + pad, b.maxZ + pad];
 
-    if (tracedTees.length > 0) {
-      let tMinX = Infinity, tMaxX = -Infinity, tMinZ = Infinity, tMaxZ = -Infinity;
-      for (const tt of tracedTees) {
-        if (tt.minX < tMinX) tMinX = tt.minX;
-        if (tt.maxX > tMaxX) tMaxX = tt.maxX;
-        if (tt.minZ < tMinZ) tMinZ = tt.minZ;
-        if (tt.maxZ > tMaxZ) tMaxZ = tt.maxZ;
+      // Uniformly resample the spline contour to 20 smooth vertices packed into 10 vec4 uniforms
+      const pts = feat.contour;
+      const n = pts.length;
+      const arr = plugin.tracedTeePolyArray;
+      for (let k = 0; k < 20; k++) {
+        const fIdx = (k / 20) * n;
+        const i0 = Math.floor(fIdx) % n;
+        const i1 = (i0 + 1) % n;
+        const frac = fIdx - Math.floor(fIdx);
+        arr[k * 2] = pts[i0].x * (1 - frac) + pts[i1].x * frac;
+        arr[k * 2 + 1] = pts[i0].z * (1 - frac) + pts[i1].z * frac;
       }
-      const spanX = Math.max(4, tMaxX - tMinX);
-      const spanZ = Math.max(4, tMaxZ - tMinZ);
-      plugin.tracedTeeBounds = [tMinX, tMinZ, spanX, spanZ];
-
-      const TRes = 256;
-      if (!this.tracedTeeSdfData) {
-        this.tracedTeeSdfData = new Uint8Array(TRes * TRes * 4);
-      }
-      if (!this.tracedTeeSdfTex) {
-        this.tracedTeeSdfTex = RawTexture.CreateRGBATexture(
-          this.tracedTeeSdfData,
-          TRes,
-          TRes,
-          this.scene,
-          false,
-          false,
-          Texture.BILINEAR_SAMPLINGMODE
-        );
-        this.tracedTeeSdfTex.wrapU = Texture.CLAMP_ADDRESSMODE;
-        this.tracedTeeSdfTex.wrapV = Texture.CLAMP_ADDRESSMODE;
-      }
-      plugin.tracedTeeSdfTex = this.tracedTeeSdfTex;
-
-      const tData = this.tracedTeeSdfData;
-      tData.fill(255);
-      for (let py = 0; py < TRes; py++) {
-        const wz = tMinZ + ((py + 0.5) / TRes) * spanZ;
-        const rowOff = py * TRes;
-        for (let px = 0; px < TRes; px++) {
-          const wx = tMinX + ((px + 0.5) / TRes) * spanX;
-          let bestD = 16.0;
-          for (const tt of tracedTees) {
-            if (wx < tt.minX || wx > tt.maxX || wz < tt.minZ || wz > tt.maxZ) continue;
-            const d = signedDistanceToPolygon(wx, wz, tt.contour);
-            if (d < bestD) bestD = d;
-          }
-          const enc = Math.max(0, Math.min(255, Math.round(((bestD + 16.0) / 32.0) * 255)));
-          const o = (rowOff + px) * 4;
-          tData[o] = enc;
-          tData[o + 1] = enc;
-          tData[o + 2] = enc;
-          tData[o + 3] = 255;
-        }
-      }
-      this.tracedTeeSdfTex.update(tData);
+      plugin.tracedTeePolyCount = 20;
+      break;
     }
 
     for (let featIdx = 0; featIdx < this.stampedFeatures.length; featIdx++) {
