@@ -2150,28 +2150,67 @@ export class SceneryFactory {
    * compact PGA size (~13cm), and spaced further apart (~4.8m).
    */
   public createTeeMarkers(x: number, groundY: number, z: number, greenX = 130, greenZ = 360): Mesh {
-    const root = new Mesh(`tee_markers_${x}_${z}`, this.scene);
+    const root = new Mesh(`tee_markers_${Math.round(x)}_${Math.round(z)}`, this.scene);
     root.position.set(x, groundY, z);
+    root.rotationQuaternion = null;
 
     // Rubber Duck Championship Tee Markers (rubber_duck_01_01.glb)
     // Scale 0.85 gives ~0.24m (9.5 inches) charming tournament tee markers
     const duckScale = 0.85;
 
-    // Orient ducks facing straight down the fairway directly towards the green
-    const angleToGreen = Math.atan2(greenX - x, greenZ - z);
-
+    // Keep each duck at local rotation 0 (facing +Z in root space); ONLY root.rotation.y
+    // rotates the entire tee group (both markers + direction arrow) around its central pivot.
     [-2.4, 2.4].forEach((offset, i) => {
       const master = this.ensureMasterDuckMesh();
       const duckInst = master.createInstance(`tee_duck_${i}_${Math.round(x)}_${Math.round(z)}`);
       duckInst.position.set(offset, 0.005, 0);
       duckInst.scaling.set(duckScale, duckScale, duckScale);
-      duckInst.rotation.y = angleToGreen;
+      duckInst.rotation.set(0, 0, 0);
       duckInst.receiveShadows = true;
       duckInst.isPickable = true;
       duckInst.parent = root;
 
       this.activeDucks.push(duckInst);
     });
+
+    // Designer-only Tee Hitting Direction Arrow (points straight along +Z from central pivot)
+    const arrowRoot = new Mesh(`tee_direction_arrow_${Math.round(x)}_${Math.round(z)}`, this.scene);
+    arrowRoot.parent = root;
+    arrowRoot.isPickable = false;
+
+    const arrowMat = new StandardMaterial(`teeDirArrowMat_${Math.round(x)}_${Math.round(z)}`, this.scene);
+    arrowMat.emissiveColor = new Color3(0.14, 0.88, 0.96);
+    arrowMat.diffuseColor = new Color3(0.14, 0.88, 0.96);
+    arrowMat.disableLighting = true;
+    arrowMat.alpha = 0.88;
+
+    const shaft = MeshBuilder.CreateBox(`tee_dir_shaft_${Math.round(x)}_${Math.round(z)}`, {
+      width: 0.22,
+      height: 0.05,
+      depth: 2.8
+    }, this.scene);
+    shaft.position.set(0, 0.14, 2.0);
+    shaft.material = arrowMat;
+    shaft.isPickable = false;
+    shaft.receiveShadows = false;
+    shaft.parent = arrowRoot;
+
+    const head = MeshBuilder.CreateCylinder(`tee_dir_head_${Math.round(x)}_${Math.round(z)}`, {
+      diameterTop: 0,
+      diameterBottom: 0.92,
+      height: 1.05,
+      tessellation: 3
+    }, this.scene);
+    head.rotation.x = Math.PI / 2;
+    head.position.set(0, 0.14, 3.85);
+    head.material = arrowMat;
+    head.isPickable = false;
+    head.receiveShadows = false;
+    head.parent = arrowRoot;
+
+    // Orient entire group towards the green/target around the central pivot
+    const angleToGreen = Math.atan2(greenX - x, greenZ - z);
+    root.rotation.y = angleToGreen;
 
     root.computeWorldMatrix(true);
     for (const child of root.getChildMeshes()) {

@@ -3590,6 +3590,8 @@ export class TerrainGrid {
 
     this.stampedFeatures.push(record);
     const newIdx = this.stampedFeatures.length - 1;
+    this.syncPluginLayerState();
+    this.syncAnalyticalFeatureUniforms();
     this.redrawSplatTexture();
     this.rebuildMesh(false);
     return newIdx;
@@ -4822,6 +4824,9 @@ export class TerrainGrid {
         feat.surfaceType === SurfaceType.TEE
       ) {
         this.syncAnalyticalFeatureUniforms();
+        if (feat.contour && feat.contour.length >= 3) {
+          this.redrawSplatTexture();
+        }
         if (
           (feat.surfaceType === SurfaceType.BUNKER || feat.surfaceType === SurfaceType.WATER || feat.surfaceType === SurfaceType.TEE) &&
           (settings.showCollarRings !== undefined || settings.collarWidth !== undefined)
@@ -4875,6 +4880,9 @@ export class TerrainGrid {
       feat.surfaceType === SurfaceType.TEE
     ) {
       this.syncAnalyticalFeatureUniforms();
+      if (feat.contour && feat.contour.length >= 3) {
+        this.redrawSplatTexture();
+      }
       if (feat.surfaceType === SurfaceType.BUNKER || feat.surfaceType === SurfaceType.WATER || feat.surfaceType === SurfaceType.TEE) {
         this.rebuildMesh(false);
       }
@@ -6607,6 +6615,20 @@ export class TerrainGrid {
           ctx, localPts, feat.centerX, feat.centerZ, 0, sX, sZ,
           '#43a047', surfMat, surfId, 0, 0
         );
+
+        const stripeW = surfMat.mowingStripeWidth ?? 1.8;
+        const contrast = surfMat.mowingStripeContrast !== undefined ? surfMat.mowingStripeContrast : 0.45;
+        if (surfMat.showMowingStripes !== false && stripeW > 0.05 && contrast > 0.001) {
+          const stepMeters = Math.max(0.25, stripeW);
+          const halfW = Math.max(4, feat.width * 0.5);
+          const halfL = Math.max(4, feat.length * 0.5);
+          const stepX = stepMeters * sX;
+          const count = Math.ceil((halfW * 2.6) / stepMeters) * 2;
+          this.drawClippedMowingStripes(
+            ctx, localPts, feat.centerX, feat.centerZ, feat.rotationRad || 0, sX, sZ,
+            'x', (feat.centerX - halfW * 1.3) * sX, stepX, count, (feat.centerZ - halfL * 1.3) * sZ, halfL * 2.6 * sZ, contrast
+          );
+        }
       }
       return;
     }

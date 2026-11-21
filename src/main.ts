@@ -1009,6 +1009,7 @@ class FairwayStudioApp {
         if (this.courseManager.currentHoleIndex !== 0) {
           this.courseManager.selectHole(0);
         }
+        this.courseManager.setTeeDirectionArrowVisible(false);
         this.applyPlayModeCorridorCulling(true);
         this.ui.setMode('play');
         this.setViewportShadingMode('rendered', false);
@@ -1036,6 +1037,7 @@ class FairwayStudioApp {
         this.freezeStaticWorldMatrices(false);
         this.applyPlayModeCorridorCulling(false);
         this.activeMode = 'designer';
+        this.courseManager.setTeeDirectionArrowVisible(true);
         this.wasCameraDetachedForTrace = false;
         this.cameraCtrl.setMode('designer');
         this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
@@ -1071,6 +1073,7 @@ class FairwayStudioApp {
             this.playFreezeTimerId = null;
           }
           this.freezeStaticWorldMatrices(false);
+          this.courseManager.setTeeDirectionArrowVisible(true);
           this.applyPlayModeCorridorCulling(false);
           this.setViewportShadingMode(this.currentShadingMode, true);
           this.wasCameraDetachedForTrace = false;
@@ -1117,7 +1120,11 @@ class FairwayStudioApp {
           if (this.courseManager) {
             this.courseManager.snapTeeToTeeBox();
             this.courseManager.snapPinToGreen();
+            this.courseManager.setTeeDirectionArrowVisible(false);
             this.courseManager.refreshSceneryForFeatures();
+            if (this.ball && this.courseManager.currentHole?.pinPosition) {
+              this.ball.setTargetPin(this.courseManager.currentHole.pinPosition);
+            }
           }
           this.applyPlayModeCorridorCulling(true);
           if (this.courseManager) {
@@ -2802,6 +2809,16 @@ class FairwayStudioApp {
         }
         const groundY = this.terrain.getElevation(p.x, p.z);
         this.selectedMesh.position.y = groundY;
+        // Lock tee marker group rotation to clean flat Y-axis yaw around its central pivot
+        // so individual ducks never tilt or change orientation relative to the group.
+        let teeYaw = this.selectedMesh.rotation.y;
+        if (this.selectedMesh.rotationQuaternion) {
+          teeYaw = this.selectedMesh.rotationQuaternion.toEulerAngles().y;
+          this.selectedMesh.rotationQuaternion = null;
+        }
+        this.selectedMesh.rotation.set(0, teeYaw, 0);
+        this.currentAimAzimuth = (teeYaw * 180) / Math.PI;
+        this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
         this.courseManager.currentHole.teePosition.x = p.x;
         this.courseManager.currentHole.teePosition.y = groundY;
         this.courseManager.currentHole.teePosition.z = p.z;

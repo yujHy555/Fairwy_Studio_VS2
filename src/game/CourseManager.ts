@@ -527,7 +527,19 @@ export class CourseManager {
       targetPt.z
     );
     const headingRad = Math.atan2(targetPt.x - feat.centerX, targetPt.z - feat.centerZ);
-    this.activeTeeMesh.rotation.y = headingRad;
+    this.activeTeeMesh.rotationQuaternion = null;
+    this.activeTeeMesh.rotation.set(0, headingRad, 0);
+  }
+
+  public setTeeDirectionArrowVisible(visible: boolean) {
+    if (!this.activeTeeMesh || this.activeTeeMesh.isDisposed()) return;
+    for (const child of this.activeTeeMesh.getChildMeshes(false)) {
+      const n = (child.name || '').toLowerCase();
+      if (n.startsWith('tee_direction_arrow') || n.startsWith('tee_dir_')) {
+        child.setEnabled(visible);
+        child.isVisible = visible;
+      }
+    }
   }
 
   public ensurePinForGreenFeature(feat: { centerX: number; centerZ: number }) {
@@ -689,13 +701,16 @@ export class CourseManager {
       this.activeTeeMesh.isVisible = true;
       const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
       const headingRad = Math.atan2(targetPt.x - bestTee.centerX, targetPt.z - bestTee.centerZ);
-      this.activeTeeMesh.rotation.y = headingRad;
+      this.activeTeeMesh.rotationQuaternion = null;
+      this.activeTeeMesh.rotation.set(0, headingRad, 0);
     }
     if (this.activeTeeMesh) {
       this.activeTeeMesh.alwaysSelectAsActiveMesh = true;
       this.activeTeeMesh.computeWorldMatrix(true);
       this.activeTeeMesh.refreshBoundingInfo({});
       for (const child of this.activeTeeMesh.getChildMeshes()) {
+        const cn = (child.name || '').toLowerCase();
+        if (cn.startsWith('tee_direction_arrow') || cn.startsWith('tee_dir_')) continue;
         child.unfreezeWorldMatrix();
         child.setEnabled(true);
         child.isVisible = true;

@@ -670,12 +670,17 @@ export class Ball {
         this.curSpin = step.nextSpin;
         this.mesh.position.set(step.nextPos.x, step.nextPos.y, step.nextPos.z);
 
-        // Instant Out-Of-Bounds detection in flight as soon as ball exits the main hole land boundary
+        // Instant Out-Of-Bounds detection in flight as soon as ball exits the active course land boundary
+        const isLargeCourse = this.terrain.width > 300 || this.terrain.length > 500;
+        const obMinX = isLargeCourse ? 4 : 24;
+        const obMaxX = isLargeCourse ? this.terrain.width - 4 : Math.max(196, this.terrain.width - 24);
+        const obMinZ = isLargeCourse ? 4 : 18;
+        const obMaxZ = isLargeCourse ? this.terrain.length - 4 : Math.max(418, this.terrain.length - 42);
         if (
-          this.mesh.position.x < 24 ||
-          this.mesh.position.x > 196 ||
-          this.mesh.position.z < 18 ||
-          this.mesh.position.z > 418
+          this.mesh.position.x < obMinX ||
+          this.mesh.position.x > obMaxX ||
+          this.mesh.position.z < obMinZ ||
+          this.mesh.position.z > obMaxZ
         ) {
           this.state = BallState.AT_REST;
           this.curVelocity = { x: 0, y: 0, z: 0 };
@@ -801,12 +806,17 @@ export class Ball {
         }
       }
 
-      // 2. Early Course boundary containment (Out of bounds as soon as it exits main golf hole land)
+      // 2. Early Course boundary containment (Out of bounds as soon as it exits active course land)
+      const isLargeRoll = this.terrain.width > 300 || this.terrain.length > 500;
+      const rollMinX = isLargeRoll ? 4 : 24;
+      const rollMaxX = isLargeRoll ? this.terrain.width - 4 : Math.max(196, this.terrain.width - 24);
+      const rollMinZ = isLargeRoll ? 4 : 18;
+      const rollMaxZ = isLargeRoll ? this.terrain.length - 4 : Math.max(418, this.terrain.length - 42);
       if (
-        this.mesh.position.x < 24 ||
-        this.mesh.position.x > 196 ||
-        this.mesh.position.z < 18 ||
-        this.mesh.position.z > 418
+        this.mesh.position.x < rollMinX ||
+        this.mesh.position.x > rollMaxX ||
+        this.mesh.position.z < rollMinZ ||
+        this.mesh.position.z > rollMaxZ
       ) {
         this.state = BallState.AT_REST;
         this.curVelocity = { x: 0, y: 0, z: 0 };
