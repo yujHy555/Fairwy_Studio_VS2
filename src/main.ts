@@ -193,6 +193,8 @@ class FairwayStudioApp {
   private lastMapNGCourseSpan = 460;
   private lastUnifiedCourseMeta: UnifiedMapNGCourse['meta'] | null = null;
   private lastSatelliteFileName = '';
+  private postSculptSyncTimer: number | null = null;
+  private pendingSculptHistorySnap: ReturnType<FairwayStudioApp['captureHistorySnapshot']> | null = null;
   private groundSelectionOutline: LinesMesh | null = null;
   private objectSelectionOutline: LinesMesh | null = null;
   private playFreezeTimerId: number | null = null;
@@ -968,6 +970,7 @@ class FairwayStudioApp {
     const distToPin = Math.sqrt(dx * dx + dz * dz);
     this.activeClub = getRecommendedClub(distToPin, false);
     this.swingEngine.setClub(this.activeClub);
+    this.swingEngine.setLie(SurfaceType.TEE);
 
     if (this.aimSystem) {
       this.aimSystem.targetDistanceMeters = Math.min(distToPin, this.activeClub.typicalCarryMeters);
@@ -2632,12 +2635,38 @@ class FairwayStudioApp {
     });
   }
 
+  private schedulePostSculptSync() {
+    if (this.postSculptSyncTimer !== null) {
+      window.clearTimeout(this.postSculptSyncTimer);
+    }
+    this.postSculptSyncTimer = window.setTimeout(() => {
+      this.postSculptSyncTimer = null;
+      if (this.terrain.terrainMesh) {
+        this.terrain.terrainMesh.refreshBoundingInfo({});
+        // Skip heavy full-map Havok collider rebuild on huge MapNG courses in Designer Mode;
+        // Play Mode builds a tight corridor collider when entering Play.
+        const isHugeDesignerMap = this.activeMode === 'designer' && (this.terrain.width > 400 || this.terrain.length > 400);
+        if (!isHugeDesignerMap) {
+          this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+        }
+      }
+      this.greenVisualizer.rebuildSlopeGrid();
+      this.update1mGridMesh();
+      if (this.pendingSculptHistorySnap) {
+        this.recordHistoryStep('Sculpt Terrain', this.pendingSculptHistorySnap);
+        this.pendingSculptHistorySnap = null;
+      }
+    }, 320);
+  }
+
   private handleDesignerActionAtPoint(pickedPoint: Vector3) {
     const gx = Math.round(pickedPoint.x);
     const gz = Math.round(pickedPoint.z);
 
     if (this.activeDesignerTool === 'sculpt') {
-      const snap = this.captureHistorySnapshot('Sculpt Terrain');
+      if (!this.pendingSculptHistorySnap) {
+        this.pendingSculptHistorySnap = this.captureHistorySnapshot('Sculpt Terrain');
+      }
       this.terrain.applySculptBrush(
         gx,
         gz,
@@ -2646,10 +2675,7 @@ class FairwayStudioApp {
         this.activeSculptMode,
         this.targetSurface
       );
-      this.havok.updateTerrainCollision(this.terrain.terrainMesh!);
-      this.greenVisualizer.rebuildSlopeGrid();
-      this.update1mGridMesh();
-      this.recordHistoryStep('Sculpt Terrain', snap);
+      this.schedulePostSculptSync();
 
     } else if (this.activeDesignerTool === 'stamp') {
       if (!this.activePreset) return;

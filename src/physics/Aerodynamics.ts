@@ -147,12 +147,12 @@ export class Aerodynamics {
     if (club.category === 'putter') return 0.0;
 
     const clubWindWeights: Record<string, number> = {
-      driver: 1.00,
-      '3wood': 0.94,
-      '3hybrid': 0.88,
-      '5iron': 0.80,
-      '7iron': 0.56,
-      '9iron': 0.36,
+      driver: 0.38,
+      '3wood': 0.42,
+      '3hybrid': 0.46,
+      '5iron': 0.56,
+      '7iron': 0.48,
+      '9iron': 0.34,
       pw: 0.24,
       sw: 0.16,
       lw: 0.12

@@ -26,11 +26,11 @@ export const SURFACE_PROPERTIES: Record<SurfaceType, SurfaceProperties> = {
   [SurfaceType.ROUGH]: {
     name: 'Rough',
     color: [0.32, 0.42, 0.20],     // Earthy olive & golden-brown fescue rough
-    restitution: 0.12,             // Very low bounce in tall grass
-    friction: 0.85,                // Heavy turf friction
-    rollingResistance: 1.15,       // High resistance; ball stops in 1-3m
-    liePenalty: 0.72,              // 72% power from deep rough
-    spinMultiplier: 0.45           // Fliers / reduced spin
+    restitution: 0.25,             // Natural turf bounce on default course terrain
+    friction: 0.46,                // Balanced rough turf friction
+    rollingResistance: 0.48,       // Natural forward roll on course terrain
+    liePenalty: 0.90,              // Mild 10% power reduction from default course rough
+    spinMultiplier: 0.78           // Clean launch without nose-diving
   },
   [SurfaceType.FAIRWAY]: {
     name: 'Fairway',

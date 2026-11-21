@@ -1592,10 +1592,10 @@ html, body {
    ========================================================================== */
 .club-card-container {
   position: fixed;
-  bottom: 24px;
-  right: 20px;
-  width: 524px;
-  height: 292px;
+  bottom: 14px;
+  right: 16px;
+  width: 210px;
+  height: 117px;
   z-index: 1200;
   pointer-events: none;
   user-select: none;
@@ -1605,11 +1605,11 @@ html, body {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 524px;
-  height: 292px;
+  width: 210px;
+  height: 117px;
   display: block;
-  border-radius: 16px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.70), 0 4px 16px rgba(0, 0, 0, 0.45);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.65), 0 3px 10px rgba(0, 0, 0, 0.45);
   transition: transform 0.48s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.38s ease-out;
   transform: translateX(0) scale(1);
   opacity: 1;
@@ -1629,15 +1629,15 @@ html, body {
 
 @media (max-height: 900px) {
   .club-card-container {
-    width: 390px;
-    height: 217px;
-    bottom: 16px;
-    right: 18px;
+    width: 180px;
+    height: 100px;
+    bottom: 12px;
+    right: 16px;
   }
   .club-card-img {
-    width: 390px;
-    height: 217px;
-    border-radius: 12px;
+    width: 180px;
+    height: 100px;
+    border-radius: 9px;
   }
 }
 
@@ -3607,15 +3607,17 @@ body.in-designer-mode #club-card-putter {
 }
 
 .hud-overhead-layout-panel {
-  width: 348px !important;
-  top: 156px !important;
+  width: 480px !important;
+  max-width: 480px !important;
+  top: 148px !important;
   right: 16px !important;
   transform: none !important;
 }
 
 #overhead-hole-canvas {
-  width: 324px !important;
-  height: 350px !important;
+  width: 456px !important;
+  height: 480px !important;
+  max-height: calc(100vh - 360px) !important;
 }
 
 /* Next-Gen Frame Rate Counter & Optimization Tips HUD */
@@ -4625,8 +4627,9 @@ body.in-designer-mode #club-card-putter {
 }
 
 .overhead-graphic-wrap {
-  width: 324px;
-  height: 350px;
+  width: 456px;
+  height: 480px;
+  max-height: calc(100vh - 360px);
   display: flex;
   align-items: center;
   justify-content: center;

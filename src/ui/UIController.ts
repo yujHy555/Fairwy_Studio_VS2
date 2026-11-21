@@ -753,7 +753,7 @@ export class UIController {
                 <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
                 <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Click to aim shot • Drag to measure distance • Double-click to clear"></canvas>
               </div>
-              <canvas id="overhead-hole-canvas" width="324" height="350"></canvas>
+              <canvas id="overhead-hole-canvas" width="456" height="480"></canvas>
             </div>
 
             <!-- Yardage Readout & Elevation Delta Footer -->

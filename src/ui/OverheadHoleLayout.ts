@@ -403,8 +403,8 @@ export class OverheadHoleLayout {
   private viewCenterZ: number = 0;
   private viewAngle: number = 0; // rotation to align hole vertically
   private viewScale: number = 1.0;
-  private canvasWidth: number = 324;
-  private canvasHeight: number = 350;
+  private canvasWidth: number = 456;
+  private canvasHeight: number = 480;
   private rotMinZ: number = 0;
 
   // Tooltip

@@ -7,8 +7,8 @@ export const GOLF_CLUBS: ClubSpec[] = [
     shortName: 'DR',
     category: 'wood',
     loftDegrees: 10.5,
-    typicalCarryMeters: 275,
-    baseBallSpeedMps: 74.0, // Calibrated for exactly 300m max total distance (carry + rollout) on full 105% strike
+    typicalCarryMeters: 285,
+    baseBallSpeedMps: 77.5, // Calibrated for ~300m max total distance (carry + rollout) on a pure strike
     baseBackspinRPM: 2400,
     spinDecayFactor: 0.028,
     maxSidespinRPM: 1200,
