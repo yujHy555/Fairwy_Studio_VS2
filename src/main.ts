@@ -96,6 +96,7 @@ interface DesignerHistoryStep {
 class HdriUvScalePlugin extends MaterialPluginBase {
   public scaleU = 1.0;
   public scaleV = 1.0;
+  public offsetU = 0.0;
   public offsetV = 0.0;
 
   constructor(material: Material) {
@@ -114,7 +115,7 @@ class HdriUvScalePlugin extends MaterialPluginBase {
   }
 
   bindForSubMesh(uniformBuffer: UniformBuffer) {
-    uniformBuffer.updateFloat4('uHdriUvParams', this.scaleU, this.scaleV, this.offsetV, 0.0);
+    uniformBuffer.updateFloat4('uHdriUvParams', this.scaleU, this.scaleV, this.offsetU, this.offsetV);
   }
 
   getCustomCode(shaderType: string) {
@@ -122,13 +123,13 @@ class HdriUvScalePlugin extends MaterialPluginBase {
       return {
         '!reflectionCoords=reflectionVector;': `
           #if defined(HDRI_UV_TRANSFORM) && defined(REFLECTIONMAP_SKYBOX) && (!defined(LODBASEDMICROSFURACE) || defined(REALTIME_FILTERING))
-            if (abs(uHdriUvParams.x - 1.0) > 0.0005 || abs(uHdriUvParams.y - 1.0) > 0.0005 || abs(uHdriUvParams.z) > 0.0005) {
+            if (abs(uHdriUvParams.x - 1.0) > 0.0005 || abs(uHdriUvParams.y - 1.0) > 0.0005 || abs(uHdriUvParams.z) > 0.0005 || abs(uHdriUvParams.w) > 0.0005) {
               vec3 hDir = normalize(reflectionVector);
               float phi = atan(hDir.z, hDir.x);
               float elev = asin(clamp(hDir.y, -0.9999, 0.9999));
-              float elevScaled = clamp(elev * max(0.05, uHdriUvParams.y) - uHdriUvParams.z * 0.78, -1.56, 1.56);
+              float elevScaled = clamp(elev * max(0.05, uHdriUvParams.y) - uHdriUvParams.w * 0.78, -1.56, 1.56);
               float cosEl = cos(elevScaled);
-              float phiA = phi * max(0.05, uHdriUvParams.x);
+              float phiA = phi * max(0.05, uHdriUvParams.x) + uHdriUvParams.z * 6.28318530718;
               reflectionCoords = vec3(cosEl * cos(phiA), sin(elevScaled), cosEl * sin(phiA));
             } else {
               reflectionCoords = reflectionVector;
@@ -139,30 +140,18 @@ class HdriUvScalePlugin extends MaterialPluginBase {
         `,
         '!environmentRadiance=sampleReflectionLod\\(reflectionSampler,reflectionCoords,reflectionLOD\\);': `
           #if defined(HDRI_UV_TRANSFORM) && defined(REFLECTIONMAP_SKYBOX)
-            if (abs(uHdriUvParams.x - 1.0) > 0.0005 || abs(uHdriUvParams.y - 1.0) > 0.0005 || abs(uHdriUvParams.z) > 0.0005) {
+            if (abs(uHdriUvParams.x - 1.0) > 0.0005 || abs(uHdriUvParams.y - 1.0) > 0.0005 || abs(uHdriUvParams.z) > 0.0005 || abs(uHdriUvParams.w) > 0.0005) {
               vec3 hDir = normalize(reflectionCoords);
               float phi = atan(hDir.z, hDir.x);
               float elev = asin(clamp(hDir.y, -0.9999, 0.9999));
               float sU = max(0.05, uHdriUvParams.x);
               float sV = max(0.05, uHdriUvParams.y);
-              float elevScaled = clamp(elev * sV - uHdriUvParams.z * 0.78, -1.56, 1.56);
+              float elevScaled = clamp(elev * sV - uHdriUvParams.w * 0.78, -1.56, 1.56);
               float cosEl = cos(elevScaled);
               float sinEl = sin(elevScaled);
-              float phiA = phi * sU;
+              float phiA = phi * sU + uHdriUvParams.z * 6.28318530718;
               vec3 dirA = vec3(cosEl * cos(phiA), sinEl, cosEl * sin(phiA));
-              if (abs(sU - 1.0) > 0.0005) {
-                float sgn = phi >= 0.0 ? 1.0 : -1.0;
-                float phiB = (phi - sgn * 6.28318530718) * sU;
-                vec3 dirB = vec3(cosEl * cos(phiB), sinEl, cosEl * sin(phiB));
-                float seamW = smoothstep(2.05, 3.14159265359, abs(phi)) * 0.5;
-                environmentRadiance = mix(
-                  sampleReflectionLod(reflectionSampler, dirA, reflectionLOD),
-                  sampleReflectionLod(reflectionSampler, dirB, reflectionLOD),
-                  seamW
-                );
-              } else {
-                environmentRadiance = sampleReflectionLod(reflectionSampler, dirA, reflectionLOD);
-              }
+              environmentRadiance = sampleReflectionLod(reflectionSampler, dirA, reflectionLOD);
             } else {
               environmentRadiance = sampleReflectionLod(reflectionSampler, reflectionCoords, reflectionLOD);
             }
@@ -1671,32 +1660,52 @@ class FairwayStudioApp {
         }
       },
       onSaveProjectDisk: () => {
-        const json = this.courseManager.exportCourseJSON();
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const filename = `${(this.courseManager.courseData.name || 'GolfCourse').replace(/[^a-zA-Z0-9_-]/g, '_')}_project.json`;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        this.ui.showToast(`Saved project: ${filename} 💾`, 'success');
+        try {
+          const json = this.courseManager.exportCourseJSON();
+          const blob = new Blob([json], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const filename = `${(this.courseManager.courseData.name || 'GolfCourse').replace(/[^a-zA-Z0-9_-]/g, '_')}_project.json`;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+          const mb = (blob.size / (1024 * 1024)).toFixed(2);
+          this.ui.showToast(`Saved project: ${filename} (${mb} MB) 💾`, 'success', 3200);
+        } catch (err: any) {
+          console.error('Save project failed:', err);
+          this.ui.showToast(`Failed to save project: ${err?.message || 'Export error'}`, 'penalty', 4000);
+        }
       },
       onOpenProjectDisk: (json: string) => {
         const success = this.courseManager.importCourseJSON(json);
         if (success) {
+          this.lastUnifiedCourseMeta = (this.courseManager.courseData.mapngMeta as any) || null;
+          this.lastMapNGCourseCenter = { x: this.terrain.width * 0.5, z: this.terrain.length * 0.5 };
+          this.lastMapNGCourseSpan = Math.max(460, Math.max(this.terrain.width, this.terrain.length));
+          this.cameraCtrl.setDesignerWorldBounds(
+            -180,
+            this.terrain.width + 180,
+            -180,
+            this.terrain.length + 180,
+            Math.max(1400, this.lastMapNGCourseSpan * 1.65)
+          );
           this.greenVisualizer.rebuildSlopeGrid();
-          if (this.terrain.terrainMesh) {
+          if (this.terrain.terrainMesh && this.terrain.width <= 400 && this.terrain.length <= 400) {
             this.havok.updateTerrainCollision(this.terrain.terrainMesh);
           }
           this.update1mGridMesh();
+          this.courseManager.currentStrokes = 0;
+          this.courseManager.currentPutts = 0;
           this.placeBallAtActiveTee();
           this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
+          this.ui.updateSatelliteUi(Boolean(this.terrain.satellitePreviewDataUrl), this.terrain.satelliteOpacity);
           this.updateHUDDisplay();
           this.registerSceneryShadows();
           this.refreshOutliner();
+          this.updateDevStats();
           if (this.courseManager.courseData.name) {
             this.ui.updateHeaderBranding(this.courseManager.courseData.name);
           }
@@ -1825,6 +1834,18 @@ class FairwayStudioApp {
       onResetShot: () => {
         this.placeBallAtActiveTee();
         this.updateHUDDisplay();
+      },
+      onRestartHole: () => {
+        if (this.courseManager) {
+          this.courseManager.currentStrokes = 0;
+          this.courseManager.currentPutts = 0;
+          this.courseManager.snapTeeToTeeBox();
+        }
+        this.ball.clearTracer();
+        this.placeBallAtActiveTee();
+        this.ui.setSwingEnabled(true);
+        this.updateHUDDisplay();
+        this.ui.showToast('🔄 Hole restarted from Tee Box', 'info', 2000);
       }
     });
 
@@ -3284,15 +3305,27 @@ class FairwayStudioApp {
 
     const newX = this.featureGizmoProxy.position.x;
     const newZ = this.featureGizmoProxy.position.z;
-    let newRot = this.featureGizmoProxy.rotation.y;
+    let proxyYaw = this.featureGizmoProxy.rotation.y;
     if (this.featureGizmoProxy.rotationQuaternion) {
-      newRot = this.featureGizmoProxy.rotationQuaternion.toEulerAngles().y;
+      proxyYaw = this.featureGizmoProxy.rotationQuaternion.toEulerAngles().y;
     }
+    // TerrainGrid uses counter-clockwise +rotationRad (BabylonJS left-handed -Y yaw)
+    const newRot = -proxyYaw;
 
+    const sx = this.featureGizmoProxy.scaling.x;
+    const sz = this.featureGizmoProxy.scaling.z;
+    const scaleChanged = Math.abs(sx - 1.0) > 0.002 || Math.abs(sz - 1.0) > 0.002;
     const posChanged = Math.abs(newX - feat.centerX) > 0.001 || Math.abs(newZ - feat.centerZ) > 0.001;
     const rotChanged = Math.abs(newRot - feat.rotationRad) > 0.001;
 
-    if (!posChanged && !rotChanged && isLive) return;
+    if (!posChanged && !rotChanged && !scaleChanged && isLive) return;
+
+    if (scaleChanged) {
+      const targetW = Math.max(2.0, Math.min(260.0, feat.width * Math.max(0.2, sx)));
+      const targetL = Math.max(2.0, Math.min(380.0, feat.length * Math.max(0.2, sz)));
+      this.featureGizmoProxy.scaling.set(1, 1, 1);
+      this.terrain.resizeFeature(this.selectedFeatureIndex, targetW, targetL, isLive);
+    }
 
     if (posChanged && rotChanged) {
       this.terrain.moveAndRotateFeature(this.selectedFeatureIndex, newX, newZ, newRot, isLive);
@@ -3300,7 +3333,7 @@ class FairwayStudioApp {
       this.terrain.moveFeature(this.selectedFeatureIndex, newX, newZ, isLive);
     } else if (rotChanged) {
       this.terrain.rotateFeature(this.selectedFeatureIndex, newRot, isLive);
-    } else if (!isLive) {
+    } else if (!isLive && !scaleChanged) {
       this.terrain.finalizeFeatureTransform(this.selectedFeatureIndex);
     }
 
@@ -3319,9 +3352,9 @@ class FairwayStudioApp {
     if (this.featureGizmoProxy) {
       const elev = this.terrain.getElevation(feat.centerX, feat.centerZ);
       this.featureGizmoProxy.position.set(feat.centerX, elev + 0.15, feat.centerZ);
-      this.featureGizmoProxy.rotation.y = feat.rotationRad;
+      this.featureGizmoProxy.rotation.y = -feat.rotationRad;
       if (this.featureGizmoProxy.rotationQuaternion) {
-        this.featureGizmoProxy.rotationQuaternion = Quaternion.RotationYawPitchRoll(feat.rotationRad, 0, 0);
+        this.featureGizmoProxy.rotationQuaternion = Quaternion.RotationYawPitchRoll(-feat.rotationRad, 0, 0);
       }
     }
 
@@ -3355,7 +3388,8 @@ class FairwayStudioApp {
       activeHole.teePosition.y = this.terrain.getElevation(feat.centerX, feat.centerZ);
       if (this.courseManager.activeTeeMesh) {
         this.courseManager.activeTeeMesh.position.set(feat.centerX, activeHole.teePosition.y, feat.centerZ);
-        this.courseManager.activeTeeMesh.rotation.y = feat.rotationRad;
+        this.courseManager.activeTeeMesh.rotationQuaternion = null;
+        this.courseManager.activeTeeMesh.rotation.set(0, -feat.rotationRad, 0);
       }
       if (this.ball && this.courseManager.currentStrokes === 0) {
         this.ball.setPosition(feat.centerX, activeHole.teePosition.y + GOLF_CONSTANTS.BALL_RENDER_RADIUS, feat.centerZ);
@@ -4984,6 +5018,7 @@ class FairwayStudioApp {
       if (this.hdriUvPlugin) {
         this.hdriUvPlugin.scaleU = scaleU;
         this.hdriUvPlugin.scaleV = scaleV;
+        this.hdriUvPlugin.offsetU = 0.0;
         this.hdriUvPlugin.offsetV = offsetV;
       }
 

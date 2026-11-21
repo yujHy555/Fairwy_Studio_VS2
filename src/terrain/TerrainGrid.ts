@@ -521,7 +521,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outNormal = normLvl > 0.001
                 ? normalize(terrainTBN * normalize(vec3(normRaw.xy * normLvl, max(0.55, normRaw.z))))
                 : geomN;
-              outRough = lpMat.y < -0.05 ? 0.14 : clamp(roughRaw * lpMat.y, 0.0, 1.0);
+              float smoothRough = mix(0.78, roughRaw, 0.32);
+              outRough = lpMat.y < -0.05 ? 0.14 : clamp(smoothRough * lpMat.y, 0.0, 1.0);
               outMetallic = clamp(lpExtra.x, 0.0, 1.0);
               outBaseColor = lpExtra.yzw;
             }
@@ -788,6 +789,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               out float outFringeLid,
               out float outShowCollar,
               out float outLocalX,
+              out float outLocalZ,
               out float outHalfW,
               out vec3 outStripeParams
             ) {
@@ -797,6 +799,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outFringeLid = 0.0;
               outShowCollar = 0.0;
               outLocalX = 0.0;
+              outLocalZ = 0.0;
               outHalfW = 5.0;
               outStripeParams = vec3(0.0);
 
@@ -816,11 +819,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 float showCollar = tRC.z;
                 float collarW = max(0.0, tRC.w);
                 bool hasCollar = (showCollar > 0.5 && collarW > 0.02);
-                float outerFeather = hasCollar ? 0.38 : 0.16;
+                float outerFeather = hasCollar ? 0.55 : 0.28;
 
                 float dx = worldX - tCH.x;
                 float dz = worldZ - tCH.y;
-                float maxDim = max(halfW, halfL) + collarW + outerFeather + 1.0;
+                float maxDim = max(halfW, halfL) + collarW + outerFeather + 1.5;
                 if (abs(dx) > maxDim || abs(dz) > maxDim) continue;
 
                 float lx = dx * tRC.x - dz * tRC.y;
@@ -834,9 +837,9 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
                 if (d > collarW + outerFeather) continue;
 
-                float tWeight = 1.0 - smoothstep(-0.07, 0.07, d);
+                float tWeight = 1.0 - smoothstep(-0.14, 0.14, d);
                 float totW = hasCollar
-                  ? (1.0 - smoothstep(collarW - 0.08, collarW + outerFeather, d))
+                  ? (1.0 - smoothstep(collarW - 0.16, collarW + outerFeather, d))
                   : tWeight;
 
                 if (totW > outTotalWeight) {
@@ -846,6 +849,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                   outFringeLid = tIds.y;
                   outShowCollar = hasCollar ? 1.0 : 0.0;
                   outLocalX = lx;
+                  outLocalZ = lz;
                   outHalfW = halfW;
                   outStripeParams = tStr.xyz;
                 }
@@ -866,11 +870,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               inout vec3 ioCol,
               inout vec3 ioNorm
             ) {
-              if (surfLid < 0.5 || dVal > collarW + 0.35) return;
-              float coreW = 1.0 - smoothstep(-0.09, 0.09, dVal);
-              float effColW = showCol > 0.5 ? max(0.20, collarW) : 0.0;
+              if (surfLid < 0.5 || dVal > collarW + 0.55) return;
+              float coreW = 1.0 - smoothstep(-0.18, 0.18, dVal);
+              float effColW = showCol > 0.5 ? max(0.24, collarW) : 0.0;
               float totW = effColW > 0.05
-                ? (1.0 - smoothstep(effColW - 0.12, effColW + 0.16, dVal))
+                ? (1.0 - smoothstep(effColW - 0.22, effColW + 0.34, dVal))
                 : coreW;
               if (totW <= 0.001) return;
 
@@ -902,11 +906,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               inout float ioRough,
               inout float ioMet
             ) {
-              if (surfLid < 0.5 || dVal > collarW + 0.35) return;
-              float coreW = 1.0 - smoothstep(-0.09, 0.09, dVal);
-              float effColW = showCol > 0.5 ? max(0.20, collarW) : 0.0;
+              if (surfLid < 0.5 || dVal > collarW + 0.55) return;
+              float coreW = 1.0 - smoothstep(-0.18, 0.18, dVal);
+              float effColW = showCol > 0.5 ? max(0.24, collarW) : 0.0;
               float totW = effColW > 0.05
-                ? (1.0 - smoothstep(effColW - 0.12, effColW + 0.16, dVal))
+                ? (1.0 - smoothstep(effColW - 0.22, effColW + 0.34, dVal))
                 : coreW;
               if (totW <= 0.001) return;
 
@@ -1071,6 +1075,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             float tFringeLid;
             float tShowCollar;
             float tLocalX;
+            float tLocalZ;
             float tHalfW;
             vec3 tStripeParams;
             evaluateTeeSDF(
@@ -1082,13 +1087,15 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               tFringeLid,
               tShowCollar,
               tLocalX,
+              tLocalZ,
               tHalfW,
               tStripeParams
             );
 
             if (tSurfLid > 0.5 && tTotalWeight > 0.001) {
+              vec2 teeRotUv = vec2(tLocalX / max(1.0, uTeeMeta.y) + 0.5, tLocalZ / max(1.0, uTeeMeta.z) + 0.5);
               vec3 tSurfTex; float tSurfMix; vec3 tSurfNorm; float tSR; float tSM; vec3 tSurfBase;
-              evalSingleLayer(tSurfLid, vRawTerrainUV, terrainTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
+              evalSingleLayer(tSurfLid, teeRotUv, terrainTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
               vec3 tSurfCol = mix(tSurfBase, tSurfTex, tSurfMix);
 
               if (tStripeParams.x > 0.5 && tStripeParams.y > 0.05 && tStripeParams.z > 0.001) {
@@ -1106,7 +1113,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
               if (tShowCollar > 0.5 && tFringeLid > 0.5) {
                 vec3 tFrTex; float tFrMix; vec3 tFrNorm; float tFR; float tFM; vec3 tFrBase;
-                evalSingleLayer(tFringeLid, vRawTerrainUV, terrainTBN, geomN, slopeSafe, tFrTex, tFrMix, tFrNorm, tFR, tFM, tFrBase);
+                evalSingleLayer(tFringeLid, teeRotUv, terrainTBN, geomN, slopeSafe, tFrTex, tFrMix, tFrNorm, tFR, tFM, tFrBase);
                 vec3 tFringeCol = mix(tFrBase, tFrTex, tFrMix);
                 #if defined(VERTEXCOLOR) || defined(VERTEXALPHA)
                   tFringeCol *= vColor.rgb;
@@ -1418,20 +1425,21 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             // Layer 0b: Analytical Tee Box roughness & metallic
             float spTTotalW; float spTWeight;
             float spTSurfLid; float spTFringeLid; float spTShowCollar;
-            float spTLocalX; float spTHalfW; vec3 spTStripe;
+            float spTLocalX; float spTLocalZ; float spTHalfW; vec3 spTStripe;
             evaluateTeeSDF(
               vRawTerrainUV, uTeeMeta,
               spTTotalW, spTWeight,
               spTSurfLid, spTFringeLid, spTShowCollar,
-              spTLocalX, spTHalfW, spTStripe
+              spTLocalX, spTLocalZ, spTHalfW, spTStripe
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
+              vec2 spTeeRotUv = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.5, spTLocalZ / max(1.0, uTeeMeta.z) + 0.5);
               float tSR; float tSM;
-              evalSingleLayer(spTSurfLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
+              evalSingleLayer(spTSurfLid, spTeeRotUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
               if (spTShowCollar > 0.5 && spTFringeLid > 0.5) {
                 float tFR; float tFM;
-                evalSingleLayer(spTFringeLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tFR, tFM, unusedBase);
+                evalSingleLayer(spTFringeLid, spTeeRotUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tFR, tFM, unusedBase);
                 float teeCompR = mix(tFR, tSR, spTWeight);
                 float teeCompM = mix(tFM, tSM, spTWeight);
                 hostRough = mix(hostRough, teeCompR, spTTotalW);
@@ -1604,17 +1612,18 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
             float spTTotalW; float spTWeight;
             float spTSurfLid; float spTFringeLid; float spTShowCollar;
-            float spTLocalX; float spTHalfW; vec3 spTStripe;
+            float spTLocalX; float spTLocalZ; float spTHalfW; vec3 spTStripe;
             evaluateTeeSDF(
               vRawTerrainUV, uTeeMeta,
               spTTotalW, spTWeight,
               spTSurfLid, spTFringeLid, spTShowCollar,
-              spTLocalX, spTHalfW, spTStripe
+              spTLocalX, spTLocalZ, spTHalfW, spTStripe
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
+              vec2 spTeeRotUv2 = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.5, spTLocalZ / max(1.0, uTeeMeta.z) + 0.5);
               float tSR; float tSM;
-              evalSingleLayer(spTSurfLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
+              evalSingleLayer(spTSurfLid, spTeeRotUv2, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
               if (spTShowCollar > 0.5 && spTFringeLid > 0.5) {
                 float tFR; float tFM;
                 evalSingleLayer(spTFringeLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tFR, tFM, unusedBase);
@@ -4139,6 +4148,65 @@ export class TerrainGrid {
   /**
    * Simultaneously moves and rotates a feature in a single pass to eliminate double-rebuilding.
    */
+  public resizeFeature(
+    featureIndex: number,
+    newWidth: number,
+    newLength: number,
+    isDraft: boolean = false
+  ) {
+    if (featureIndex < 0 || featureIndex >= this.stampedFeatures.length) return;
+    const feat = this.stampedFeatures[featureIndex];
+    const oldBounds = this.getFeatureAffectedBounds(feat);
+    const oldW = Math.max(1.0, feat.width);
+    const oldL = Math.max(1.0, feat.length);
+    const clampedW = Math.max(2.0, Math.min(260.0, newWidth));
+    const clampedL = Math.max(2.0, Math.min(380.0, newLength));
+    const scaleX = clampedW / oldW;
+    const scaleZ = clampedL / oldL;
+
+    if (feat.surfaceType !== SurfaceType.BUNKER) {
+      this.isBaseCourseDirty = true;
+    }
+
+    feat.width = clampedW;
+    feat.length = clampedL;
+
+    if (feat.contour && feat.contour.length >= 3) {
+      const cosR = Math.cos(-feat.rotationRad);
+      const sinR = Math.sin(-feat.rotationRad);
+      const invCos = Math.cos(feat.rotationRad);
+      const invSin = Math.sin(feat.rotationRad);
+      for (const pt of feat.contour) {
+        const dx = pt.x - feat.centerX;
+        const dz = pt.z - feat.centerZ;
+        const lx = (dx * cosR - dz * sinR) * scaleX;
+        const lz = (dx * sinR + dz * cosR) * scaleZ;
+        pt.x = feat.centerX + (lx * invCos - lz * invSin);
+        pt.z = feat.centerZ + (lx * invSin + lz * invCos);
+      }
+    }
+    if (feat.doglegPoints && feat.doglegPoints.length >= 2) {
+      for (const pt of feat.doglegPoints) {
+        pt.width = Math.max(4, pt.width * scaleX);
+        pt.x = feat.centerX + (pt.x - feat.centerX) * scaleX;
+        pt.z = feat.centerZ + (pt.z - feat.centerZ) * scaleZ;
+      }
+    }
+
+    if (isDraft) {
+      this.applyFastDraftFeatureMove(featureIndex, oldBounds, feat);
+      return;
+    }
+    this.dragStaticFeatureIdx = -1;
+    const skipSplat =
+      !feat.contour &&
+      (feat.surfaceType === SurfaceType.BUNKER ||
+        feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.WATER ||
+        feat.surfaceType === SurfaceType.TEE);
+    this.rebuildAllStampedFeatures(false, skipSplat);
+  }
+
   public moveAndRotateFeature(
     featureIndex: number,
     newCenterX: number,
@@ -5672,6 +5740,25 @@ export class TerrainGrid {
       compactBaseHeights[i] = Math.round(this.baseHeights[i] * 1000) / 1000;
     }
 
+    // RLE-compress courseBoundaryMask so full 18-hole MapNG projects save cleanly & compactly
+    let courseBoundaryMaskRle: number[] | null = null;
+    if (this.courseBoundaryMask && this.courseBoundaryMask.length === this.gridX * this.gridZ) {
+      courseBoundaryMaskRle = [];
+      let curVal = this.courseBoundaryMask[0];
+      let runLen = 1;
+      for (let i = 1; i < this.courseBoundaryMask.length; i++) {
+        const v = this.courseBoundaryMask[i];
+        if (v === curVal) {
+          runLen++;
+        } else {
+          courseBoundaryMaskRle.push(curVal, runLen);
+          curVal = v;
+          runLen = 1;
+        }
+      }
+      courseBoundaryMaskRle.push(curVal, runLen);
+    }
+
     return {
       gridWidth: this.width,
       gridLength: this.length,
@@ -5679,6 +5766,9 @@ export class TerrainGrid {
       baseHeights: compactBaseHeights,
       heights: compactHeights,
       surfaceTypes: Array.from(this.surfaceTypes),
+      courseBoundaryMaskRle,
+      satelliteDataUrl: this.satellitePreviewDataUrl || null,
+      satelliteOpacity: this.satelliteOpacity,
       stampedFeatures: this.stampedFeatures.map(f => {
         const clean: Record<string, any> = {};
         for (const [k, v] of Object.entries(f)) {
@@ -5726,6 +5816,25 @@ export class TerrainGrid {
       }
       if (state.surfaceTypes && state.surfaceTypes.length === this.surfaceTypes.length) {
         this.surfaceTypes.set(state.surfaceTypes);
+      }
+      if (Array.isArray(state.courseBoundaryMaskRle) && state.courseBoundaryMaskRle.length >= 2) {
+        const decoded = new Uint8Array(this.gridX * this.gridZ);
+        let ptr = 0;
+        for (let i = 0; i + 1 < state.courseBoundaryMaskRle.length && ptr < decoded.length; i += 2) {
+          const val = state.courseBoundaryMaskRle[i] ? 1 : 0;
+          const cnt = Math.min(state.courseBoundaryMaskRle[i + 1] | 0, decoded.length - ptr);
+          decoded.fill(val, ptr, ptr + cnt);
+          ptr += cnt;
+        }
+        this.courseBoundaryMask = decoded;
+      } else {
+        this.courseBoundaryMask = null;
+      }
+      if (typeof state.satelliteDataUrl === 'string' && state.satelliteDataUrl.length > 0) {
+        this.setSatelliteOverlayTexture(
+          state.satelliteDataUrl,
+          typeof state.satelliteOpacity === 'number' ? state.satelliteOpacity : 0.85
+        );
       }
       if (Array.isArray(state.stampedFeatures)) {
         const sanitizeUrlObj = (u?: FeatureTextureUrls) => {

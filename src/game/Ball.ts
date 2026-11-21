@@ -186,6 +186,7 @@ export class Ball {
     this.tracerMaterial.alpha = 1.0;
     this.tracerMaterial.transparencyMode = Material.MATERIAL_ALPHABLEND;
     this.tracerMaterial.backFaceCulling = false;
+    this.tracerMaterial.zOffset = -3;
 
     const maxVerts = Ball.MAX_TRACER_POINTS * 2;
     this.tracerPositions = new Float32Array(maxVerts * 3);
@@ -1186,10 +1187,15 @@ export class Ball {
 
     const path: Vector3[] = [];
     for (let i = 0; i < pts.length; i++) {
-      path.push(pts[i]);
+      const p = pts[i];
+      const gy = this.terrain.getElevation(p.x, p.z);
+      const minY = gy + 0.11;
+      path.push(p.y < minY ? new Vector3(p.x, minY, p.z) : p);
     }
 
-    const tip = this.tracerLiveTip || this.mesh.position;
+    const rawTip = this.tracerLiveTip || this.mesh.position;
+    const tipGy = this.terrain.getElevation(rawTip.x, rawTip.z);
+    const tip = rawTip.y < tipGy + 0.11 ? new Vector3(rawTip.x, tipGy + 0.11, rawTip.z) : rawTip;
     const lastCommitted = path[path.length - 1];
     const tipDist = Vector3.Distance(lastCommitted, tip);
     if (tipDist > 0.04) {

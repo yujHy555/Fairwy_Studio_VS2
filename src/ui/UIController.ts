@@ -164,6 +164,7 @@ export interface UIEventCallbacks {
   onTraceFinish?: () => void;
   onTraceCancel?: () => void;
   onTraceUndoPoint?: () => void;
+  onRestartHole?: () => void;
 }
 
 
@@ -744,9 +745,9 @@ export class UIController {
             <div class="overhead-canvas-container">
               <div id="overhead-graphic-wrap" class="overhead-graphic-wrap" style="display: none;">
                 <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
-                <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Drag on hole graphic to measure distance (double-click to clear)"></canvas>
+                <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Click to aim shot • Drag to measure distance • Double-click to clear"></canvas>
               </div>
-              <canvas id="overhead-hole-canvas" width="210" height="220"></canvas>
+              <canvas id="overhead-hole-canvas" width="290" height="310"></canvas>
             </div>
 
             <!-- Yardage Readout & Elevation Delta Footer -->
@@ -787,8 +788,19 @@ export class UIController {
         </div>
 
 
-        <!-- Next-Gen Bottom-Left Stack: Frame Rate Counter & Gamepad HUD -->
+        <!-- Next-Gen Bottom-Left Stack: In-Game Dev Controls, Frame Rate Counter & Gamepad HUD -->
         <div class="bottom-left-hud-stack">
+          <!-- In-Game Developer Control Panel -->
+          <div id="play-dev-controls" class="play-dev-controls">
+            <div class="play-dev-header">
+              <span class="play-dev-title">⚡ DEVELOPER CONTROLS</span>
+            </div>
+            <div class="play-dev-actions">
+              <button id="btn-play-restart-hole" class="btn btn-sm play-dev-btn" title="Restart current hole from the Tee Box">🔄 Restart Hole</button>
+              <button id="btn-play-open-designer" class="btn btn-sm play-dev-btn play-dev-btn-alt" title="Jump back into Course Designer">🛠️ Designer</button>
+            </div>
+          </div>
+
           <!-- Next-Gen Frame Rate Counter & Optimization Tips HUD -->
           <div id="perf-fps-hud" class="perf-fps-hud">
             <div class="perf-hud-header">
@@ -5558,6 +5570,16 @@ export class UIController {
     document.getElementById('btn-toggle-perf-tips')?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.togglePerfMinimized();
+    });
+    document.getElementById('btn-play-restart-hole')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.callbacks.onRestartHole?.();
+    });
+    document.getElementById('btn-play-open-designer')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.currentMode === 'play') {
+        this.toggleMode();
+      }
     });
 
     if (this.perfTipTimer) clearInterval(this.perfTipTimer);

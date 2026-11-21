@@ -295,9 +295,9 @@ export class CameraController {
     this.camera.target.x = ballPos.x;
     this.camera.target.z = ballPos.z;
     if (!hasLanded) {
-      this.camera.target.y = ballPos.y;
+      this.camera.target.y = ballPos.y + 1.15;
     } else {
-      this.camera.target.y = Math.max(groundY + 0.25, ballPos.y);
+      this.camera.target.y = Math.max(groundY + 0.55, ballPos.y + 0.35);
     }
 
     if (this.isUserDragging) return;
@@ -306,8 +306,9 @@ export class CameraController {
     const kPos = 1 - Math.exp(-5.0 * Math.max(0.001, Math.min(0.05, dt)));
     const kYaw = 1 - Math.exp(-3.8 * Math.max(0.001, Math.min(0.05, dt)));
 
-    const desiredRadius = hasLanded ? 5.6 : 9.2;
-    const desiredBeta = hasLanded ? Math.PI / 2.48 : Math.PI / 2.95;
+    const desiredRadius = hasLanded ? 6.2 : 10.5;
+    // Flatter broadcast chase angle (~13° downward in flight) keeps the fairway & green ahead in view
+    const desiredBeta = hasLanded ? 1.28 : 1.34;
     this.camera.radius += (desiredRadius - this.camera.radius) * kPos;
     this.camera.beta += (desiredBeta - this.camera.beta) * kPos;
 

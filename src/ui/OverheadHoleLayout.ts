@@ -105,8 +105,8 @@ export class OverheadHoleLayout {
       btnRadar.classList.toggle('active', effectiveMode === 'radar');
     }
     if (btnDist) {
-      btnDist.disabled = !hasDist;
-      btnDist.style.display = hasDist && effectiveMode === 'graphic' ? 'inline-flex' : 'none';
+      btnDist.disabled = !hasGraphic;
+      btnDist.style.display = hasGraphic && effectiveMode === 'graphic' ? 'inline-flex' : 'none';
       btnDist.classList.toggle('active', this.showDistanceGraphic);
     }
 
@@ -124,6 +124,7 @@ export class OverheadHoleLayout {
       this.ensureGraphicRulerBound();
       graphicWrap.style.display = 'flex';
       if (radarCanvas) radarCanvas.style.display = 'none';
+      this.redrawGraphicRuler();
     } else {
       if (graphicWrap) graphicWrap.style.display = 'none';
       if (radarCanvas) radarCanvas.style.display = 'block';
@@ -163,6 +164,35 @@ export class OverheadHoleLayout {
       e.stopPropagation();
       this.isRulerDragging = false;
       this.rulerEnd = getRelPt(e);
+
+      // Clean click (< 6px drag) aims the shot toward that clicked spot along the hole corridor!
+      if (this.rulerStart && this.rulerEnd && this.lastData) {
+        const dragPx = Math.hypot(
+          this.rulerEnd.x - this.rulerStart.x,
+          this.rulerEnd.y - this.rulerStart.y
+        );
+        if (dragPx < 6) {
+          const rect = canvas.getBoundingClientRect();
+          const normY = 1 - Math.max(0.05, Math.min(0.95, this.rulerEnd.y / Math.max(1, rect.height)));
+          const normX = (this.rulerEnd.x / Math.max(1, rect.width)) - 0.5;
+          const tee = this.lastData.hole.teePosition;
+          const pin = this.lastData.pinPos;
+          const dx = pin.x - tee.x;
+          const dz = pin.z - tee.z;
+          const holeLen = Math.max(40, Math.hypot(dx, dz));
+          const fwdX = dx / holeLen;
+          const fwdZ = dz / holeLen;
+          const rightX = fwdZ;
+          const rightZ = -fwdX;
+          const along = ((normY - 0.10) / 0.80) * holeLen;
+          const lateral = normX * Math.min(110, holeLen * 0.42);
+          const worldX = tee.x + fwdX * along + rightX * lateral;
+          const worldZ = tee.z + fwdZ * along + rightZ * lateral;
+          this.rulerStart = null;
+          this.rulerEnd = null;
+          this.onAimToPointCallback?.(worldX, worldZ);
+        }
+      }
       this.redrawGraphicRuler();
     });
     canvas.addEventListener('dblclick', (e) => {
@@ -197,7 +227,60 @@ export class OverheadHoleLayout {
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    if (!this.rulerStart || !this.rulerEnd || !this.lastData) return;
+    if (!this.lastData) return;
+
+    const teeToPin = Math.hypot(
+      this.lastData.hole.pinPosition.x - this.lastData.hole.teePosition.x,
+      this.lastData.hole.pinPosition.z - this.lastData.hole.teePosition.z
+    );
+    const ballToPin = Math.hypot(
+      this.lastData.pinPos.x - this.lastData.ballPos.x,
+      this.lastData.pinPos.z - this.lastData.ballPos.z
+    );
+    const syncedHoleMeters = Math.max(40, Math.round(teeToPin));
+    const syncedRemMeters = Math.max(0, Math.round(ballToPin));
+
+    // When Distances toggle is ON in Graphic mode, draw live synced 3D distances over the hole graphic
+    if (this.showDistanceGraphic) {
+      ctx.save();
+      const topPill = `PIN ${syncedRemMeters}m (${Math.round(syncedRemMeters * 1.09361)}y) • HOLE ${syncedHoleMeters}m`;
+      ctx.font = '700 10px Inter, system-ui, sans-serif';
+      const tw0 = ctx.measureText(topPill).width;
+      const bw0 = Math.min(rect.width - 12, tw0 + 14);
+      const bx0 = (rect.width - bw0) * 0.5;
+      ctx.fillStyle = 'rgba(8, 16, 28, 0.88)';
+      ctx.beginPath();
+      ctx.roundRect(bx0, 6, bw0, 20, 6);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.72)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#e0f2fe';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(topPill, rect.width * 0.5, 16);
+
+      // Synced 100m / 150m / 200m layup yardage markers from green along the graphic corridor
+      for (const markM of [100, 150, 200]) {
+        if (markM >= syncedHoleMeters - 20) continue;
+        const fracFromPin = markM / syncedHoleMeters;
+        const yPx = rect.height * (0.14 + fracFromPin * 0.74);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+        ctx.beginPath();
+        ctx.roundRect(8, yPx - 8, 42, 16, 4);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(74, 222, 128, 0.65)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#86efac';
+        ctx.font = '700 9px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${markM}m`, 29, yPx + 0.5);
+      }
+      ctx.restore();
+    }
+
+    if (!this.rulerStart || !this.rulerEnd) return;
 
     const dx = this.rulerEnd.x - this.rulerStart.x;
     const dy = this.rulerEnd.y - this.rulerStart.y;
@@ -206,10 +289,6 @@ export class OverheadHoleLayout {
 
     const imgRect = img?.getBoundingClientRect();
     const imgH = Math.max(40, imgRect?.height || rect.height);
-    const teeToPin = Math.hypot(
-      this.lastData.hole.pinPosition.x - this.lastData.hole.teePosition.x,
-      this.lastData.hole.pinPosition.z - this.lastData.hole.teePosition.z
-    );
     const holeDistMeters = this.lastData.hole.distances?.yellow || Math.max(60, teeToPin);
     const metersPerPx = holeDistMeters / (imgH * 0.78);
     const distM = pxDist * metersPerPx;
@@ -272,8 +351,8 @@ export class OverheadHoleLayout {
   private viewCenterZ: number = 0;
   private viewAngle: number = 0; // rotation to align hole vertically
   private viewScale: number = 1.0;
-  private canvasWidth: number = 210;
-  private canvasHeight: number = 220;
+  private canvasWidth: number = 290;
+  private canvasHeight: number = 310;
   private rotMinZ: number = 0;
 
   // Tooltip
