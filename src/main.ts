@@ -6,6 +6,8 @@ import {
   Engine,
   Scene,
   Camera,
+  FreeCamera,
+  Viewport,
   Vector3,
   Matrix,
   Color3,
@@ -217,6 +219,7 @@ class FairwayStudioApp {
   private solidViewOriginalMats = new Map<AbstractMesh, Material | null>();
   private solidClayMats: Record<string, StandardMaterial> = {};
   private userOverrodeGreenOverlays = false;
+  private aerialRadarCamera: FreeCamera | null = null;
   private groundSelectionOutline: LinesMesh | null = null;
   private objectSelectionOutline: LinesMesh | null = null;
   private playFreezeTimerId: number | null = null;
@@ -902,14 +905,15 @@ class FairwayStudioApp {
         lower.includes('contour') ||
         lower.includes('brush') ||
         lower.includes('bead') ||
-        lower.includes('aim') ||
+        (lower.includes('aim') && lower !== 'cup_modernaimchevron') ||
         lower.includes('toptracer') ||
         lower.includes('tracer') ||
         lower.includes('comet') ||
         lower.includes('gizmo') ||
         lower.includes('outline') ||
+        lower.includes('teedirectionarrow') ||
         lower.startsWith('water_') ||
-        lower.startsWith('cup_')
+        (lower.startsWith('cup_') && lower !== 'cup_modernaimchevron')
       ) {
         continue;
       }
@@ -934,6 +938,26 @@ class FairwayStudioApp {
       try {
         this.shadowGenerator.addShadowCaster(this.ball.mesh, true);
       } catch {}
+    }
+
+    // Explicitly register Yellow Aiming Arrow & Tee Markers as real-time shadow casters!
+    const aimArrow = this.aimSystem?.getArrowMesh();
+    if (aimArrow && !aimArrow.isDisposed() && !existing.has(aimArrow)) {
+      try {
+        this.shadowGenerator.addShadowCaster(aimArrow, false);
+        existing.add(aimArrow);
+      } catch {}
+    }
+    if (this.courseManager?.activeTeeMesh && !this.courseManager.activeTeeMesh.isDisposed()) {
+      for (const child of this.courseManager.activeTeeMesh.getChildMeshes(false)) {
+        if (!child || child.isDisposed() || existing.has(child)) continue;
+        const cname = (child.name || '').toLowerCase();
+        if (cname.includes('teedirectionarrow') || cname.includes('arrow')) continue;
+        try {
+          this.shadowGenerator.addShadowCaster(child, false);
+          existing.add(child);
+        } catch {}
+      }
     }
 
     if (this.shadowGenerator instanceof CascadedShadowGenerator) {
@@ -1013,6 +1037,7 @@ class FairwayStudioApp {
     this.autoEnabledGreenOverlays = false;
 
     this.registerSceneryShadows();
+    window.setTimeout(() => this.registerSceneryShadows(), 1500);
     this.updateHUDDisplay();
     this.updateDevStats();
   }
@@ -4846,6 +4871,73 @@ class FairwayStudioApp {
     this.wasSettledOnGreen = isPuttingShotView;
 
     this.greenVisualizer.updatePuttingFade(dt);
+    this.updateAerialRadarCamera();
+  }
+
+  private updateAerialRadarCamera() {
+    const mainCam = this.cameraCtrl?.camera;
+    const overhead = this.ui?.overheadLayout;
+    if (!mainCam || !overhead) return;
+
+    const shouldRenderAerial = this.activeMode === 'play' && overhead.isRadarVisible();
+    if (!shouldRenderAerial) {
+      overhead.setLiveAerialActive(false);
+      if (this.scene.activeCameras && this.scene.activeCameras.length > 1) {
+        this.scene.activeCameras = [mainCam];
+      }
+      return;
+    }
+
+    const frame = overhead.getAerialCameraFrame();
+    if (!frame) {
+      overhead.setLiveAerialActive(false);
+      if (this.scene.activeCameras && this.scene.activeCameras.length > 1) {
+        this.scene.activeCameras = [mainCam];
+      }
+      return;
+    }
+
+    if (!this.aerialRadarCamera) {
+      this.aerialRadarCamera = new FreeCamera('AerialRadarCamera', new Vector3(0, 480, 0), this.scene);
+      this.aerialRadarCamera.mode = Camera.ORTHOGRAPHIC_CAMERA;
+      this.aerialRadarCamera.minZ = 10;
+      this.aerialRadarCamera.maxZ = 2500;
+    }
+
+    const cam = this.aerialRadarCamera;
+    const groundY = this.terrain.getElevation(frame.centerX, frame.centerZ);
+    cam.position.set(frame.centerX, groundY + 460, frame.centerZ);
+    cam.upVector.set(frame.upX, 0, frame.upZ);
+    cam.setTarget(new Vector3(frame.centerX, groundY, frame.centerZ));
+
+    // Match exact orthographic world half-spans of the overhead canvas so 3D terrain, ball & Toptracer align 1:1!
+    cam.orthoLeft = -frame.halfW;
+    cam.orthoRight = frame.halfW;
+    cam.orthoTop = frame.halfZ;
+    cam.orthoBottom = -frame.halfZ;
+
+    // Position the GPU viewport directly behind #overhead-hole-canvas
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const cw = Math.max(1, canvasRect.width);
+    const ch = Math.max(1, canvasRect.height);
+    const vx = Math.max(0, Math.min(1, (frame.canvasRect.left - canvasRect.left) / cw));
+    const vw = Math.max(0.01, Math.min(1 - vx, frame.canvasRect.width / cw));
+    const vh = Math.max(0.01, Math.min(1, frame.canvasRect.height / ch));
+    const vy = Math.max(0, Math.min(1 - vh, 1 - (frame.canvasRect.bottom - canvasRect.top) / ch));
+
+    cam.viewport = new Viewport(vx, vy, vw, vh);
+    mainCam.viewport = new Viewport(0, 0, 1, 1);
+
+    overhead.setLiveAerialActive(true);
+    this.scene.cameraToUseForPointers = mainCam;
+    if (
+      !this.scene.activeCameras ||
+      this.scene.activeCameras.length !== 2 ||
+      this.scene.activeCameras[0] !== mainCam ||
+      this.scene.activeCameras[1] !== cam
+    ) {
+      this.scene.activeCameras = [mainCam, cam];
+    }
   }
 
   private initGamepad() {

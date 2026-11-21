@@ -557,6 +557,17 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               return mix(nearCol, macroCol, blendW) * macroVar;
             }
 
+            // Anti-tiled 2-tap scalar roughness sampler (completely eliminates rectangular roughness tile planes on rotated Tee Boxes!)
+            float sampleSeamlessScalar(sampler2D samp, vec2 uv) {
+              float nearR = texture2D(samp, uv).r;
+              vec2 rotUv = vec2(uv.x * 0.7986 - uv.y * 0.6018, uv.x * 0.6018 + uv.y * 0.7986) * 0.43 + vec2(0.37, 0.71);
+              float macroR = texture2D(samp, rotUv).r;
+              float n1 = sin(uv.x * 1.31 + sin(uv.y * 0.97)) * 0.5 + 0.5;
+              float n2 = cos(uv.y * 1.17 - cos(uv.x * 0.83)) * 0.5 + 0.5;
+              float blendW = smoothstep(0.18, 0.82, n1 * 0.55 + n2 * 0.45) * 0.50 + 0.20;
+              return mix(nearR, macroR, blendW);
+            }
+
             // Fetches per-layer GPU transforms & properties cleanly for any independent sub-material ID (0..255)
             void readLayerEntry(float lid, out vec4 uvParams, out vec4 matParams, out vec4 extraParams) {
               float lu = (lid + 0.5) / 256.0;
@@ -593,7 +604,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               if (kind > 3.5) {
                 texCol = sampleSeamlessTurf(featColorSampler, layerUv);
                 normRaw = texture2D(featNormalSampler, layerUv).xyz * 2.0 - 1.0;
-                roughRaw = texture2D(featRoughSampler, layerUv).r;
+                roughRaw = sampleSeamlessScalar(featRoughSampler, layerUv);
               } else if (kind > 2.5) {
                 texCol = texture2D(waterBedColorSampler, layerUv).rgb;
                 #if defined(BUMP)
@@ -601,11 +612,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
-                roughRaw = texture2D(groundRoughSampler, layerUv).r;
+                roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
               } else if (kind > 1.5) {
                 texCol = sampleSeamlessTurf(sandColorSampler, layerUv);
                 normRaw = texture2D(featNormalSampler, layerUv).xyz * 2.0 - 1.0;
-                roughRaw = texture2D(featRoughSampler, layerUv).r;
+                roughRaw = sampleSeamlessScalar(featRoughSampler, layerUv);
               } else if (kind > 0.5) {
                 texCol = sampleSeamlessTurf(groundColorSampler, layerUv);
                 #if defined(BUMP)
@@ -613,7 +624,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
-                roughRaw = texture2D(groundRoughSampler, layerUv).r;
+                roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
               } else {
                 texCol = sampleSeamlessTurf(featColorSampler, layerUv);
                 #if defined(BUMP)
@@ -621,7 +632,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
-                roughRaw = texture2D(groundRoughSampler, layerUv).r;
+                roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
               }
 
               outColor = texCol;
@@ -1228,7 +1239,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             );
 
             if (tSurfLid > 0.5 && tTotalWeight > 0.001) {
-              vec2 teeRotUv = vec2(tLocalX / max(1.0, uTeeMeta.y) + 0.5, tLocalZ / max(1.0, uTeeMeta.z) + 0.5);
+              vec2 teeRotUv = vec2(tLocalX / max(1.0, uTeeMeta.y) + 0.371, tLocalZ / max(1.0, uTeeMeta.z) + 0.619);
               vec3 tSurfTex; float tSurfMix; vec3 tSurfNorm; float tSR; float tSM; vec3 tSurfBase;
               evalSingleLayer(tSurfLid, teeRotUv, terrainTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
               vec3 tSurfCol = mix(tSurfBase, tSurfTex, tSurfMix);
@@ -1595,7 +1606,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
-              vec2 spTeeRotUv = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.5, spTLocalZ / max(1.0, uTeeMeta.z) + 0.5);
+              vec2 spTeeRotUv = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.371, spTLocalZ / max(1.0, uTeeMeta.z) + 0.619);
               float tSR; float tSM;
               evalSingleLayer(spTSurfLid, spTeeRotUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
               if (spTShowCollar > 0.5 && spTFringeLid > 0.5) {
@@ -1790,7 +1801,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
-              vec2 spTeeRotUv2 = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.5, spTLocalZ / max(1.0, uTeeMeta.z) + 0.5);
+              vec2 spTeeRotUv2 = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.371, spTLocalZ / max(1.0, uTeeMeta.z) + 0.619);
               float tSR; float tSM;
               evalSingleLayer(spTSurfLid, spTeeRotUv2, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
               if (spTShowCollar > 0.5 && spTFringeLid > 0.5) {
@@ -4426,6 +4437,7 @@ export class TerrainGrid {
       !feat.contour &&
       (feat.surfaceType === SurfaceType.BUNKER ||
         feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.TEE ||
         feat.surfaceType === SurfaceType.WATER);
     this.rebuildAllStampedFeatures(false, skipSplat);
   }
@@ -4477,6 +4489,7 @@ export class TerrainGrid {
       !feat.contour &&
       (feat.surfaceType === SurfaceType.BUNKER ||
         feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.TEE ||
         feat.surfaceType === SurfaceType.WATER);
     this.rebuildAllStampedFeatures(false, skipSplat);
   }
@@ -4603,6 +4616,7 @@ export class TerrainGrid {
       !feat.contour &&
       (feat.surfaceType === SurfaceType.BUNKER ||
         feat.surfaceType === SurfaceType.GREEN ||
+        feat.surfaceType === SurfaceType.TEE ||
         feat.surfaceType === SurfaceType.WATER);
     this.rebuildAllStampedFeatures(false, skipSplat);
   }

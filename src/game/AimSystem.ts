@@ -32,6 +32,10 @@ export class AimSystem {
   private isArrowActive: boolean = true;
   private pulseTime: number = 0;
 
+  public getArrowMesh(): Mesh {
+    return this.arrowMesh;
+  }
+
   constructor(
     scene: Scene,
     terrain: TerrainGrid,

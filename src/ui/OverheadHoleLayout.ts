@@ -23,6 +23,7 @@ export class OverheadHoleLayout {
   private ctx: CanvasRenderingContext2D | null = null;
 
   private isMinimized: boolean = false;
+  private liveAerialActive: boolean = false;
   private animFrameId: number | null = null;
   private pulsePhase: number = 0;
   private viewMode: 'graphic' | 'radar' = 'graphic';
@@ -37,6 +38,56 @@ export class OverheadHoleLayout {
 
   public setOnOpenCourseGuide(cb: () => void) {
     this.onOpenCourseGuide = cb;
+  }
+
+  public isRadarVisible(): boolean {
+    if (this.isMinimized || !this.lastData) return false;
+    const hasGraphic = Boolean(this.lastData.hole.overheadImageUrl);
+    const effectiveMode: 'graphic' | 'radar' = hasGraphic ? this.viewMode : 'radar';
+    return effectiveMode === 'radar';
+  }
+
+  public setLiveAerialActive(active: boolean) {
+    if (this.liveAerialActive === active) return;
+    this.liveAerialActive = active;
+    if (this.container) {
+      this.container.classList.toggle('live-aerial-active', active);
+    }
+    this.render();
+  }
+
+  public getAerialCameraFrame(): {
+    canvasRect: DOMRect;
+    centerX: number;
+    centerZ: number;
+    upX: number;
+    upZ: number;
+    halfW: number;
+    halfZ: number;
+  } | null {
+    if (!this.canvas || !this.lastData || !this.isRadarVisible()) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) return null;
+    this.computeViewport();
+    const center = this.canvasToWorld(this.canvasWidth * 0.5, this.canvasHeight * 0.5);
+    const topW = this.canvasToWorld(this.canvasWidth * 0.5, 0);
+    const botW = this.canvasToWorld(this.canvasWidth * 0.5, this.canvasHeight);
+    if (!center || !topW || !botW || this.viewScale <= 0.0001) return null;
+    const ux = topW.x - botW.x;
+    const uz = topW.z - botW.z;
+    const uLen = Math.hypot(ux, uz) || 1;
+    // Slight 1.18x aerial pullback so surrounding fairways, trees, and hazards frame the hole beautifully
+    const halfW = (this.canvasWidth * 0.5) / this.viewScale;
+    const halfZ = (this.canvasHeight * 0.5) / this.viewScale;
+    return {
+      canvasRect: rect,
+      centerX: center.x,
+      centerZ: center.z,
+      upX: ux / uLen,
+      upZ: uz / uLen,
+      halfW,
+      halfZ
+    };
   }
 
   public setViewMode(mode: 'graphic' | 'radar') {
@@ -567,7 +618,7 @@ export class OverheadHoleLayout {
    */
   private worldToCanvas(wx: number, wz: number): { x: number; y: number } {
     if (!this.lastData) return { x: 0, y: 0 };
-    const tee = this.lastData.hole.teePosition;
+    const { tee } = this.getEffectiveTeeAndPin();
 
     // Rotate around tee by viewAngle so pin is strictly positive Y (upwards)
     const relX = wx - tee.x;
@@ -589,7 +640,7 @@ export class OverheadHoleLayout {
    */
   private canvasToWorld(cx: number, cy: number): { x: number; z: number } | null {
     if (!this.lastData || this.viewScale === 0) return null;
-    const tee = this.lastData.hole.teePosition;
+    const { tee } = this.getEffectiveTeeAndPin();
     const padBottom = 32;
 
     const rotX = (cx - this.canvasWidth * 0.5) / this.viewScale;
@@ -691,68 +742,70 @@ export class OverheadHoleLayout {
     const data = this.lastData;
     const { tee: effTee, pin: effPin } = this.getEffectiveTeeAndPin();
 
-    // 1. TRIPLE-AAA Broadcast Deep Rough & Topographic Contour Backdrop (or synced Imported Satellite Terrain!)
+    // 1. Live Dedicated 3D Aerial Camera Backdrop OR 2D Broadcast Backdrop
     ctx.clearRect(0, 0, W, H);
-    const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.44, 18, W * 0.5, H * 0.5, Math.max(W, H) * 0.72);
-    bgGrad.addColorStop(0, '#173620');
-    bgGrad.addColorStop(0.55, '#0f2516');
-    bgGrad.addColorStop(1, '#07120b');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, W, H);
+    if (!this.liveAerialActive) {
+      const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.44, 18, W * 0.5, H * 0.5, Math.max(W, H) * 0.72);
+      bgGrad.addColorStop(0, '#173620');
+      bgGrad.addColorStop(0.55, '#0f2516');
+      bgGrad.addColorStop(1, '#07120b');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, W, H);
 
-    // Draw imported MapNG satellite/terrain texture synced 1:1 with the rotated hole corridor!
-    if (this.satImg && this.satImg.complete && this.satImg.naturalWidth > 0 && data.terrainWidth > 0 && data.terrainLength > 0) {
-      ctx.save();
-      const padBottom = 36;
-      const originC = this.worldToCanvas(0, 0);
-      const axisXC = this.worldToCanvas(data.terrainWidth, 0);
-      const axisZC = this.worldToCanvas(0, data.terrainLength);
-      const a = (axisXC.x - originC.x) / data.terrainWidth;
-      const b = (axisXC.y - originC.y) / data.terrainWidth;
-      const c = (axisZC.x - originC.x) / data.terrainLength;
-      const d = (axisZC.y - originC.y) / data.terrainLength;
-      ctx.globalAlpha = 0.86;
-      ctx.transform(a, b, c, d, originC.x, originC.y);
-      ctx.drawImage(this.satImg, 0, 0, data.terrainWidth, data.terrainLength);
-      ctx.restore();
-      void padBottom;
-    }
-
-    // Subtle organic topographic contour bands for AAA architectural depth
-    ctx.save();
-    ctx.strokeStyle = 'rgba(134, 239, 172, 0.055)';
-    ctx.lineWidth = 1.1;
-    for (let ring = 1; ring <= 6; ring++) {
-      ctx.beginPath();
-      const rx = W * (0.14 * ring);
-      const ry = H * (0.13 * ring);
-      for (let i = 0; i <= 48; i++) {
-        const a = (i / 48) * Math.PI * 2;
-        const wob = 1 + 0.08 * Math.sin(a * 3 + ring * 1.1) + 0.05 * Math.cos(a * 5 - ring * 0.7);
-        const px = W * 0.5 + Math.cos(a) * rx * wob;
-        const py = H * 0.48 + Math.sin(a) * ry * wob;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+      // Draw imported MapNG satellite/terrain texture synced 1:1 with the rotated hole corridor!
+      if (this.satImg && this.satImg.complete && this.satImg.naturalWidth > 0 && data.terrainWidth > 0 && data.terrainLength > 0) {
+        ctx.save();
+        const originC = this.worldToCanvas(0, 0);
+        const axisXC = this.worldToCanvas(data.terrainWidth, 0);
+        const axisZC = this.worldToCanvas(0, data.terrainLength);
+        const a = (axisXC.x - originC.x) / data.terrainWidth;
+        const b = (axisXC.y - originC.y) / data.terrainWidth;
+        const c = (axisZC.x - originC.x) / data.terrainLength;
+        const d = (axisZC.y - originC.y) / data.terrainLength;
+        ctx.globalAlpha = 0.86;
+        ctx.transform(a, b, c, d, originC.x, originC.y);
+        ctx.drawImage(this.satImg, 0, 0, data.terrainWidth, data.terrainLength);
+        ctx.restore();
       }
-      ctx.closePath();
-      ctx.stroke();
     }
-    ctx.restore();
 
-    // Subtle tactical yardage grid
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.032)';
-    ctx.lineWidth = 1;
-    for (let y = 0; y < H; y += 44) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
-    }
-    for (let x = 0; x < W; x += 44) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, H);
-      ctx.stroke();
+    // Subtle organic topographic contour bands (only in 2D fallback mode)
+    if (!this.liveAerialActive) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(134, 239, 172, 0.055)';
+      ctx.lineWidth = 1.1;
+      for (let ring = 1; ring <= 6; ring++) {
+        ctx.beginPath();
+        const rx = W * (0.14 * ring);
+        const ry = H * (0.13 * ring);
+        for (let i = 0; i <= 48; i++) {
+          const a = (i / 48) * Math.PI * 2;
+          const wob = 1 + 0.08 * Math.sin(a * 3 + ring * 1.1) + 0.05 * Math.cos(a * 5 - ring * 0.7);
+          const px = W * 0.5 + Math.cos(a) * rx * wob;
+          const py = H * 0.48 + Math.sin(a) * ry * wob;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Subtle tactical yardage grid
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.032)';
+      ctx.lineWidth = 1;
+      for (let y = 0; y < H; y += 44) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+      }
+      for (let x = 0; x < W; x += 44) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+      }
     }
 
     // 2. Distance Arcs from the PIN (PGA Tour Broadcast Yardage Rings)
@@ -763,15 +816,15 @@ export class OverheadHoleLayout {
       const rPx = d * this.viewScale;
       ctx.beginPath();
       ctx.arc(pinPt.x, pinPt.y, rPx, 0, Math.PI * 2);
-      ctx.strokeStyle = d === 100 || d === 150 ? 'rgba(56, 189, 248, 0.22)' : 'rgba(255, 255, 255, 0.10)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = d === 100 || d === 150 ? 'rgba(56, 189, 248, 0.34)' : 'rgba(255, 255, 255, 0.16)';
+      ctx.lineWidth = 1.15;
       ctx.setLineDash([3, 4]);
       ctx.stroke();
       ctx.setLineDash([]);
 
       // Subtle arc distance label
-      ctx.fillStyle = d === 100 || d === 150 ? 'rgba(56, 189, 248, 0.75)' : 'rgba(255, 255, 255, 0.45)';
-      ctx.font = '600 8px sans-serif';
+      ctx.fillStyle = d === 100 || d === 150 ? 'rgba(186, 230, 253, 0.92)' : 'rgba(255, 255, 255, 0.68)';
+      ctx.font = '700 9px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       if (pinPt.y + rPx < H - 20) {
@@ -779,9 +832,11 @@ export class OverheadHoleLayout {
       }
     }
 
-    // 3. Stamped Hole Architecture Features (Fairways, Bunkers, Greens, Hazards)
-    for (const feat of data.features) {
-      this.drawFeatureOnOverhead(ctx, feat);
+    // 3. Stamped Hole Architecture Features (only needed in 2D fallback; live 3D Aerial Camera renders the actual 3D course!)
+    if (!this.liveAerialActive) {
+      for (const feat of data.features) {
+        this.drawFeatureOnOverhead(ctx, feat);
+      }
     }
 
     // 4. Tee Marker Box
