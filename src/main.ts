@@ -1120,8 +1120,19 @@ class FairwayStudioApp {
             this.courseManager.refreshSceneryForFeatures();
           }
           this.applyPlayModeCorridorCulling(true);
-          if (this.courseManager && this.courseManager.currentStrokes === 0) {
-            this.placeBallAtActiveTee();
+          if (this.courseManager) {
+            const cb = this.terrain.playCorridorBounds;
+            const bp = this.ball.position;
+            const ballOutsideCorridor = Boolean(
+              cb && (bp.x < cb.minX || bp.x > cb.maxX || bp.z < cb.minZ || bp.z > cb.maxZ)
+            );
+            const ballOutsideTerrain =
+              bp.x < 0 || bp.x > this.terrain.width || bp.z < 0 || bp.z > this.terrain.length;
+            if (this.courseManager.currentStrokes === 0 || ballOutsideCorridor || ballOutsideTerrain) {
+              this.courseManager.currentStrokes = 0;
+              this.courseManager.currentPutts = 0;
+              this.placeBallAtActiveTee();
+            }
           }
           this.scenery.syncColliders();
           if (this.terrain.terrainMesh && this.terrain.width <= 400 && this.terrain.length <= 400) {
@@ -2616,7 +2627,9 @@ class FairwayStudioApp {
           this.courseManager?.refreshWaterMeshes();
         } else if (p.surfaceType === SurfaceType.TEE && newFeat) {
           this.courseManager?.ensureTeeMarkersForFeature(newFeat);
-          if (this.courseManager && this.courseManager.currentStrokes === 0) {
+          if (this.courseManager) {
+            this.courseManager.currentStrokes = 0;
+            this.courseManager.currentPutts = 0;
             this.placeBallAtActiveTee();
           }
         } else if (p.surfaceType === SurfaceType.GREEN && newFeat) {
@@ -5141,18 +5154,20 @@ class FairwayStudioApp {
       }
     }
 
-    const margin = 95;
+    const margin = 120;
     minX = Math.max(0, minX - margin);
     maxX = Math.min(this.terrain.width, maxX + margin);
     minZ = Math.max(0, minZ - margin);
     maxZ = Math.min(this.terrain.length, maxZ + margin);
 
     for (const f of this.terrain.stampedFeatures) {
-      const fx0 = f.centerX - f.width * 0.5 - 24;
-      const fx1 = f.centerX + f.width * 0.5 + 24;
-      const fz0 = f.centerZ - f.length * 0.5 - 24;
-      const fz1 = f.centerZ + f.length * 0.5 + 24;
-      if (fx1 >= minX && fx0 <= maxX && fz1 >= minZ && fz0 <= maxZ) {
+      const isPrimaryAnchor = f.surfaceType === SurfaceType.TEE || f.surfaceType === SurfaceType.GREEN;
+      const pad = isPrimaryAnchor ? 45 : 24;
+      const fx0 = f.centerX - f.width * 0.5 - pad;
+      const fx1 = f.centerX + f.width * 0.5 + pad;
+      const fz0 = f.centerZ - f.length * 0.5 - pad;
+      const fz1 = f.centerZ + f.length * 0.5 + pad;
+      if (isPrimaryAnchor || (fx1 >= minX && fx0 <= maxX && fz1 >= minZ && fz0 <= maxZ)) {
         minX = Math.max(0, Math.min(minX, fx0));
         maxX = Math.min(this.terrain.width, Math.max(maxX, fx1));
         minZ = Math.max(0, Math.min(minZ, fz0));
@@ -5506,6 +5521,8 @@ class FairwayStudioApp {
 
       if (payload.clearFeatures) {
         this.courseManager.clearHoleMarkers();
+        this.courseManager.currentStrokes = 0;
+        this.courseManager.currentPutts = 0;
         const hole = this.courseManager.currentHole;
         if (hole) {
           const cx = unified.courseCenterWorld.x;
@@ -5514,6 +5531,11 @@ class FairwayStudioApp {
           hole.teePosition = { x: Math.max(10, cx), y: cy, z: Math.max(10, cz - 80) };
           hole.pinPosition = { x: Math.min(unified.worldWidth - 10, cx), y: cy, z: Math.min(unified.worldLength - 10, cz + 80) };
           hole.waypoints = [];
+          if (this.ball) {
+            const teeGroundY = this.terrain.getElevation(hole.teePosition.x, hole.teePosition.z);
+            this.ball.setPosition(hole.teePosition.x, teeGroundY + GOLF_CONSTANTS.BALL_RENDER_RADIUS, hole.teePosition.z);
+            this.ball.setTargetPin(hole.pinPosition);
+          }
         }
       } else {
         this.courseManager.setupHoleVisuals(false);

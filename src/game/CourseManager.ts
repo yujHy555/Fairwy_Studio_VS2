@@ -683,12 +683,26 @@ export class CourseManager {
     if (!this.activeTeeMesh || this.activeTeeMesh.isDisposed()) {
       this.activeTeeMesh = this.scenery.createTeeMarkers(bestTee.centerX, elev, bestTee.centerZ, hole.pinPosition.x, hole.pinPosition.z);
     } else {
+      this.activeTeeMesh.unfreezeWorldMatrix();
       this.activeTeeMesh.position.set(bestTee.centerX, elev, bestTee.centerZ);
       this.activeTeeMesh.setEnabled(true);
       this.activeTeeMesh.isVisible = true;
       const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
       const headingRad = Math.atan2(targetPt.x - bestTee.centerX, targetPt.z - bestTee.centerZ);
       this.activeTeeMesh.rotation.y = headingRad;
+    }
+    if (this.activeTeeMesh) {
+      this.activeTeeMesh.alwaysSelectAsActiveMesh = true;
+      this.activeTeeMesh.computeWorldMatrix(true);
+      this.activeTeeMesh.refreshBoundingInfo({});
+      for (const child of this.activeTeeMesh.getChildMeshes()) {
+        child.unfreezeWorldMatrix();
+        child.setEnabled(true);
+        child.isVisible = true;
+        child.alwaysSelectAsActiveMesh = true;
+        child.computeWorldMatrix(true);
+        child.refreshBoundingInfo({});
+      }
     }
 
     return true;

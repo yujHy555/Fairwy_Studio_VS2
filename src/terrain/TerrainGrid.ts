@@ -6746,6 +6746,7 @@ export class TerrainGrid {
 
     if (effectiveMask && this.playCorridorBounds) {
       const cb = this.playCorridorBounds;
+      let activeInsideCorridor = 0;
       for (let cz = 0; cz < this.gridZ; cz++) {
         const wz = (cz + 0.5) * this.cellSize;
         const rowOff = cz * this.gridX;
@@ -6758,6 +6759,48 @@ export class TerrainGrid {
           const wx = (cx + 0.5) * this.cellSize;
           if (wx < cb.minX || wx > cb.maxX) {
             effectiveMask[rowOff + cx] = 0;
+          } else if (effectiveMask[rowOff + cx] === 1) {
+            activeInsideCorridor++;
+          }
+        }
+      }
+
+      // Always unmask every stamped feature inside the Play corridor (e.g. Tee Box, Green, Fairway)
+      // so user-placed features on imported MapNG terrain are never culled in Play Mode.
+      for (const feat of this.stampedFeatures) {
+        const pad = 18;
+        const fx0 = feat.centerX - feat.width * 0.5 - pad;
+        const fx1 = feat.centerX + feat.width * 0.5 + pad;
+        const fz0 = feat.centerZ - feat.length * 0.5 - pad;
+        const fz1 = feat.centerZ + feat.length * 0.5 + pad;
+        if (fx1 < cb.minX || fx0 > cb.maxX || fz1 < cb.minZ || fz0 > cb.maxZ) continue;
+
+        const minX = Math.max(0, Math.floor(Math.max(cb.minX, fx0) / this.cellSize));
+        const maxX = Math.min(this.gridX - 1, Math.ceil(Math.min(cb.maxX, fx1) / this.cellSize));
+        const minZ = Math.max(0, Math.floor(Math.max(cb.minZ, fz0) / this.cellSize));
+        const maxZ = Math.min(this.gridZ - 1, Math.ceil(Math.min(cb.maxZ, fz1) / this.cellSize));
+        for (let z = minZ; z <= maxZ; z++) {
+          const rowOff = z * this.gridX;
+          for (let x = minX; x <= maxX; x++) {
+            if (effectiveMask[rowOff + x] === 0) {
+              effectiveMask[rowOff + x] = 1;
+              activeInsideCorridor++;
+            }
+          }
+        }
+      }
+
+      // Safety fallback: if the Play corridor had very few unmasked cells, unmask the full corridor
+      // so Play Mode never renders empty sky without terrain under the ball.
+      if (activeInsideCorridor < 64) {
+        const minX = Math.max(0, Math.floor(cb.minX / this.cellSize));
+        const maxX = Math.min(this.gridX - 1, Math.ceil(cb.maxX / this.cellSize));
+        const minZ = Math.max(0, Math.floor(cb.minZ / this.cellSize));
+        const maxZ = Math.min(this.gridZ - 1, Math.ceil(cb.maxZ / this.cellSize));
+        for (let z = minZ; z <= maxZ; z++) {
+          const rowOff = z * this.gridX;
+          for (let x = minX; x <= maxX; x++) {
+            effectiveMask[rowOff + x] = 1;
           }
         }
       }
@@ -7153,6 +7196,8 @@ export class TerrainGrid {
     vertexData.indices = this.indices;
     vertexData.applyToMesh(this.terrainMesh, true);
     this.terrainMesh.receiveShadows = true;
+    this.terrainMesh.alwaysSelectAsActiveMesh = true;
+    this.terrainMesh.refreshBoundingInfo({});
   }
 
   /**
