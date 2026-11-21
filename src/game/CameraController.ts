@@ -27,7 +27,10 @@ export class CameraController {
   private designerMaxX: number = 260;
   private designerMinZ: number = -40;
   private designerMaxZ: number = 500;
-  private designerMaxRadius: number = 360;
+  private designerMaxRadius: number = 1400;
+  private isShiftPanning: boolean = false;
+  private panStartAlpha: number = 0;
+  private panStartBeta: number = 0;
 
   constructor(scene: Scene, canvas: HTMLCanvasElement) {
     this.scene = scene;
@@ -51,9 +54,9 @@ export class CameraController {
       pointersInput.multiTouchPanning = true;
     }
 
-    // Near/Far planes tuned for maximum depth buffer precision and long-distance backdrop visibility
+    // Near/Far planes tuned for maximum depth buffer precision and long-distance course visibility
     this.camera.minZ = 0.50;
-    this.camera.maxZ = 2400;
+    this.camera.maxZ = 16000;
 
     // Remove default keyboard rotation on ArcRotateCamera so we can provide smooth WASD ground-gliding
     this.camera.keysUp = [];
@@ -68,9 +71,17 @@ export class CameraController {
       if (e.button === 0 || e.button === 1 || e.button === 2) {
         this.isUserDragging = true;
       }
-      // MMB (1) & RMB (2) screen-plane panning is restricted strictly to Designer Mode
-      if (this.mode === 'designer' && (e.button === 1 || e.button === 2)) {
+      // Industry-standard Designer navigation: MMB (1), RMB (2), or Shift+LMB (0) grabs & pans ground plane
+      const wantsPan =
+        this.mode === 'designer' &&
+        (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey));
+      if (wantsPan) {
         this.isPanningDown = true;
+        this.isShiftPanning = e.button === 0 && e.shiftKey;
+        if (this.isShiftPanning) {
+          this.panStartAlpha = this.camera.alpha;
+          this.panStartBeta = this.camera.beta;
+        }
         this.lastPanX = e.clientX;
         this.lastPanY = e.clientY;
         e.preventDefault();
@@ -79,6 +90,12 @@ export class CameraController {
 
     window.addEventListener('pointermove', (e) => {
       if (!this.isPanningDown || this.mode !== 'designer') return;
+      if (this.isShiftPanning) {
+        this.camera.alpha = this.panStartAlpha;
+        this.camera.beta = this.panStartBeta;
+        this.camera.inertialAlphaOffset = 0;
+        this.camera.inertialBetaOffset = 0;
+      }
       const dx = e.clientX - this.lastPanX;
       const dy = e.clientY - this.lastPanY;
       this.lastPanX = e.clientX;
@@ -86,32 +103,34 @@ export class CameraController {
 
       if (Math.abs(dx) < 0.25 && Math.abs(dy) < 0.25) return;
 
-      // Distance-proportional sensitivity: fine precision when close, effortless gliding when zoomed out
       const r = Math.max(1.5, this.camera.radius);
-      const panScale = r * 0.0020;
+      const panScale = r * 0.0022;
 
-      // Pure screen-plane panning (orthogonal to current view angle and vertical screen axis)
+      if (e.ctrlKey) {
+        this.camera.target.y = Math.max(-50, Math.min(250, this.camera.target.y - dy * panScale));
+        return;
+      }
+
+      // Ground-plane grab-and-pull panning along camera-relative XZ axes
       const cosAlpha = Math.cos(this.camera.alpha);
       const sinAlpha = Math.sin(this.camera.alpha);
+      const grabRightX = sinAlpha;
+      const grabRightZ = -cosAlpha;
+      const forwardX = -cosAlpha;
+      const forwardZ = -sinAlpha;
 
-      const rightX = sinAlpha;
-      const rightZ = -cosAlpha;
-
-      // Swapped panning direction: dragging mouse pans the camera view intuitively
-      const moveX = dx * rightX * panScale;
-      const moveZ = dx * rightZ * panScale;
-      const moveY = -dy * panScale;
+      const moveX = (dx * grabRightX + dy * forwardX) * panScale;
+      const moveZ = (dx * grabRightZ + dy * forwardZ) * panScale;
 
       this.camera.target.x = Math.max(this.designerMinX, Math.min(this.designerMaxX, this.camera.target.x + moveX));
-      // Unrestricted downward panning (target can go down into hollows/bunkers)
-      this.camera.target.y = Math.max(-50, Math.min(250, this.camera.target.y + moveY));
       this.camera.target.z = Math.max(this.designerMinZ, Math.min(this.designerMaxZ, this.camera.target.z + moveZ));
     });
 
     window.addEventListener('pointerup', (e) => {
       this.isUserDragging = false;
-      if (e.button === 1 || e.button === 2) {
+      if (e.button === 0 || e.button === 1 || e.button === 2) {
         this.isPanningDown = false;
+        this.isShiftPanning = false;
       }
     });
 
@@ -129,30 +148,30 @@ export class CameraController {
       this.keysPressed.delete(e.code);
     });
 
-    // Unrestricted, silky-smooth view angles and proportional zoom/pan in Designer; locked in Play
+    // Industry-standard Designer navigation constraints: distance-proportional zoom & custom ground-plane pan
     this.camera.lowerBetaLimit = 0.05;
-    this.camera.upperBetaLimit = Math.PI / 1.76; // Allows tilting upward to view treetops, sky, and horizon
+    this.camera.upperBetaLimit = Math.PI / 2.02;
     this.camera.lowerRadiusLimit = 1.2;
     this.camera.upperRadiusLimit = this.designerMaxRadius;
-    this.camera.wheelDeltaPercentage = 0.05;
-    this.camera.wheelPrecision = 15;
+    this.camera.wheelDeltaPercentage = 0.032;
+    this.camera.wheelPrecision = 0;
     this.camera.inertia = 0.65;
-    this.camera.panningInertia = 0.65;
+    this.camera.panningInertia = 0;
     this.camera.angularSensibilityX = 650;
     this.camera.angularSensibilityY = 650;
-    this.camera.panningSensibility = 80;
-    // Pure screen-plane panning (X = ScreenRight, Y = ScreenUp, Z = 0 so panning never zooms along view depth)
-    this.camera.panningAxis = new Vector3(1, 1, 0);
+    this.camera.panningSensibility = 0;
+    this.camera.panningAxis = new Vector3(1, 0, 1);
   }
 
   private applyCameraConstraints() {
     if (this.mode === 'designer') {
       this.camera.lowerBetaLimit = 0.05;
-      this.camera.upperBetaLimit = Math.PI / 1.76;
+      this.camera.upperBetaLimit = Math.PI / 2.02;
       this.camera.lowerRadiusLimit = 1.2;
       this.camera.upperRadiusLimit = this.designerMaxRadius;
-      this.camera.wheelDeltaPercentage = 0.05;
-      this.camera.wheelPrecision = 15;
+      this.camera.wheelDeltaPercentage = 0.032;
+      this.camera.wheelPrecision = 0;
+      this.camera.panningSensibility = 0;
       return;
     }
 
@@ -242,7 +261,7 @@ export class CameraController {
     this.camera.alpha += (targetAlpha - this.camera.alpha) * 0.35;
   }
 
-  public updateFlightCamera(ballPos: Vector3, ballVelocity: Vector3D, groundY = 0, hasLanded = false) {
+  public updateFlightCamera(ballPos: Vector3, ballVelocity: Vector3D, groundY = 0, hasLanded = false, dt = 0.016) {
     if (this.mode !== 'flight') return;
 
     // Direct, jitter-free lock to ball position: completely eliminates camera-ball lag and pushing illusions
@@ -256,12 +275,14 @@ export class CameraController {
 
     if (this.isUserDragging) return;
 
-    // Broadcast-style elevated rear-quarter framing keeps the flight arc & Toptracer cleanly in view
-    // beside the ball without clipping into the camera lens or obstructing takeoff
+    // Frame-rate-independent damping eliminates cascade shimmer jumps during ball flight
+    const kPos = 1 - Math.exp(-5.0 * Math.max(0.001, Math.min(0.05, dt)));
+    const kYaw = 1 - Math.exp(-3.8 * Math.max(0.001, Math.min(0.05, dt)));
+
     const desiredRadius = hasLanded ? 5.6 : 9.2;
     const desiredBeta = hasLanded ? Math.PI / 2.48 : Math.PI / 2.95;
-    this.camera.radius += (desiredRadius - this.camera.radius) * 0.08;
-    this.camera.beta += (desiredBeta - this.camera.beta) * 0.08;
+    this.camera.radius += (desiredRadius - this.camera.radius) * kPos;
+    this.camera.beta += (desiredBeta - this.camera.beta) * kPos;
 
     const horizontalSpeed = Math.sqrt(ballVelocity.x * ballVelocity.x + ballVelocity.z * ballVelocity.z);
     if (horizontalSpeed > 1.2) {
@@ -272,7 +293,7 @@ export class CameraController {
       let alphaDiff = targetAlpha - this.camera.alpha;
       while (alphaDiff < -Math.PI) alphaDiff += Math.PI * 2;
       while (alphaDiff > Math.PI) alphaDiff -= Math.PI * 2;
-      this.camera.alpha += alphaDiff * 0.06;
+      this.camera.alpha += alphaDiff * kYaw;
     }
   }
 
@@ -289,14 +310,15 @@ export class CameraController {
 
     const r = Math.max(1.2, this.camera.radius);
 
-    // 1. Dynamically scale MMB panning and wheel sensitivity with zoom distance (Designer Mode only)
+    // 1. Smooth WASD / Arrow key course gliding ONLY in Designer Mode
     if (this.mode === 'designer') {
-      this.camera.panningSensibility = Math.max(5, 850 / r);
-      this.camera.wheelPrecision = Math.max(0.8, 36 / Math.pow(r, 0.65));
-    }
+      if (this.isShiftPanning) {
+        this.camera.alpha = this.panStartAlpha;
+        this.camera.beta = this.panStartBeta;
+        this.camera.inertialAlphaOffset = 0;
+        this.camera.inertialBetaOffset = 0;
+      }
 
-    // 2. Smooth WASD / Arrow key course gliding ONLY in Designer Mode
-    if (this.mode === 'designer') {
       const moveSpeed = Math.max(18, r * 0.75) * dt;
       const forwardX = -Math.cos(this.camera.alpha);
       const forwardZ = -Math.sin(this.camera.alpha);
@@ -326,15 +348,27 @@ export class CameraController {
         const len = Math.sqrt(moveX * moveX + moveZ * moveZ) || 1;
         this.camera.target.x = Math.max(this.designerMinX, Math.min(this.designerMaxX, this.camera.target.x + (moveX / len) * moveSpeed));
         this.camera.target.z = Math.max(this.designerMinZ, Math.min(this.designerMaxZ, this.camera.target.z + (moveZ / len) * moveSpeed));
-        const targetGround = getWorldElevation(this.camera.target.x, this.camera.target.z);
-        this.camera.target.y = Math.max(
-          targetGround + 0.35,
-          this.camera.target.y * 0.85 + (targetGround + 0.6) * 0.15
-        );
       }
+
+      const targetGroundY = getWorldElevation(this.camera.target.x, this.camera.target.z);
+      if (this.camera.target.y < targetGroundY - 30) {
+        this.camera.target.y = targetGroundY - 30;
+      }
+
+      const sinBeta = Math.sin(this.camera.beta);
+      const camX = this.camera.target.x + r * sinBeta * Math.cos(this.camera.alpha);
+      const camZ = this.camera.target.z + r * sinBeta * Math.sin(this.camera.alpha);
+      const camGround = getWorldElevation(camX, camZ);
+      const currentCamY = this.camera.target.y + r * Math.cos(this.camera.beta);
+      const minCamY = camGround + 0.65;
+      if (currentCamY < minCamY && r > 0.01) {
+        const cosReq = Math.max(-0.98, Math.min(0.98, (minCamY - this.camera.target.y) / r));
+        this.camera.beta = Math.max(0.05, Math.min(this.camera.beta, Math.acos(cosReq)));
+      }
+      return;
     }
 
-    // 3. Ensure target itself never sinks below local terrain
+    // 2. Ensure target itself never sinks below local terrain in Play/Flight/Green modes
     const targetGroundY = getWorldElevation(this.camera.target.x, this.camera.target.z);
     if (this.camera.target.y < targetGroundY + 0.25) {
       this.camera.target.y = targetGroundY + 0.25;
@@ -376,8 +410,8 @@ export class CameraController {
     const currentCamY = this.camera.target.y + r * Math.cos(this.camera.beta);
 
     const dyNeeded = requiredCamY - this.camera.target.y;
-    const minBeta = this.mode === 'designer' ? 0.08 : this.playLowerBeta;
-    const maxAllowedBeta = this.mode === 'designer' ? (Math.PI / 1.76) : this.playUpperBeta;
+    const minBeta = this.playLowerBeta;
+    const maxAllowedBeta = this.playUpperBeta;
 
     if (dyNeeded < r) {
       // Analytical maximum safe beta before camera would sink below terrain
@@ -396,12 +430,6 @@ export class CameraController {
         this.camera.upperBetaLimit = minBeta;
       }
       this.camera.beta = minBeta;
-      if (this.mode === 'designer') {
-        const minRadiusNeeded = (requiredCamY - this.camera.target.y) / Math.cos(minBeta);
-        if (this.camera.radius < minRadiusNeeded) {
-          this.camera.radius = minRadiusNeeded;
-        }
-      }
     }
   }
 
@@ -446,8 +474,8 @@ export class CameraController {
     this.designerMaxX = maxX;
     this.designerMinZ = minZ;
     this.designerMaxZ = maxZ;
-    this.designerMaxRadius = Math.max(360, maxRadius);
-    this.camera.maxZ = Math.max(2400, this.designerMaxRadius * 2.6);
+    this.designerMaxRadius = Math.max(600, Math.min(2600, maxRadius));
+    this.camera.maxZ = Math.max(16000, this.designerMaxRadius * 6);
     if (this.mode === 'designer') {
       this.applyCameraConstraints();
     }

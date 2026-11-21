@@ -495,11 +495,62 @@ export class CourseManager {
     this.setupHoleVisuals();
   }
 
-  public setupHoleVisuals() {
+  public clearHoleMarkers() {
+    if (this.activePinMesh) {
+      this.activePinMesh.dispose();
+      this.activePinMesh = null;
+    }
+    if (this.activeTeeMesh) {
+      this.activeTeeMesh.dispose();
+      this.activeTeeMesh = null;
+    }
+  }
+
+  public ensureTeeMarkersForFeature(feat: { centerX: number; centerZ: number }) {
+    const hole = this.currentHole;
+    const teeY = this.terrain.getElevation(feat.centerX, feat.centerZ);
+    hole.teePosition = { x: feat.centerX, y: teeY, z: feat.centerZ };
+
+    if (this.activeTeeMesh) {
+      this.activeTeeMesh.dispose();
+      this.activeTeeMesh = null;
+    }
+    const targetPt =
+      hole.waypoints && hole.waypoints.length > 0
+        ? hole.waypoints[0]
+        : hole.pinPosition ?? { x: feat.centerX, y: teeY, z: feat.centerZ + 120 };
+    this.activeTeeMesh = this.scenery.createTeeMarkers(
+      feat.centerX,
+      teeY,
+      feat.centerZ,
+      targetPt.x,
+      targetPt.z
+    );
+    const headingRad = Math.atan2(targetPt.x - feat.centerX, targetPt.z - feat.centerZ);
+    this.activeTeeMesh.rotation.y = headingRad;
+  }
+
+  public ensurePinForGreenFeature(feat: { centerX: number; centerZ: number }) {
+    const hole = this.currentHole;
+    const pinY = this.terrain.getElevation(feat.centerX, feat.centerZ);
+    hole.pinPosition = { x: feat.centerX, y: pinY, z: feat.centerZ };
+
+    if (this.activePinMesh) {
+      this.activePinMesh.dispose();
+      this.activePinMesh = null;
+    }
+    this.activePinMesh = this.scenery.createPinAndCup(feat.centerX, pinY, feat.centerZ, hole.number);
+
+    if (this.activeTeeMesh && hole.teePosition) {
+      const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
+      this.activeTeeMesh.rotation.y = Math.atan2(targetPt.x - hole.teePosition.x, targetPt.z - hole.teePosition.z);
+    }
+  }
+
+  public setupHoleVisuals(forceCreateMarkers: boolean = false) {
     const hole = this.currentHole;
 
-    if (this.activePinMesh) this.activePinMesh.dispose();
-    if (this.activeTeeMesh) this.activeTeeMesh.dispose();
+    this.clearHoleMarkers();
 
     // Auto-validate teePosition: ensure tee markers & ball are squarely on the elevated Championship Tee Box deck
     const teeFeatures = this.terrain.stampedFeatures.filter(
@@ -553,18 +604,21 @@ export class CourseManager {
       }
     }
 
-    const pinY = this.terrain.getElevation(hole.pinPosition.x, hole.pinPosition.z);
-    hole.pinPosition.y = pinY;
-    this.activePinMesh = this.scenery.createPinAndCup(hole.pinPosition.x, pinY, hole.pinPosition.z, hole.number);
+    if (greenFeatures.length > 0 || forceCreateMarkers) {
+      const pinY = this.terrain.getElevation(hole.pinPosition.x, hole.pinPosition.z);
+      hole.pinPosition.y = pinY;
+      this.activePinMesh = this.scenery.createPinAndCup(hole.pinPosition.x, pinY, hole.pinPosition.z, hole.number);
+    }
 
-    const teeY = this.terrain.getElevation(hole.teePosition.x, hole.teePosition.z);
-    hole.teePosition.y = teeY;
-    this.activeTeeMesh = this.scenery.createTeeMarkers(hole.teePosition.x, teeY, hole.teePosition.z, hole.pinPosition.x, hole.pinPosition.z);
+    if (teeFeatures.length > 0 || forceCreateMarkers) {
+      const teeY = this.terrain.getElevation(hole.teePosition.x, hole.teePosition.z);
+      hole.teePosition.y = teeY;
+      this.activeTeeMesh = this.scenery.createTeeMarkers(hole.teePosition.x, teeY, hole.teePosition.z, hole.pinPosition.x, hole.pinPosition.z);
 
-    // Orient tee markers perpendicular to the initial fairway target line
-    const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
-    const headingRad = Math.atan2(targetPt.x - hole.teePosition.x, targetPt.z - hole.teePosition.z);
-    this.activeTeeMesh.rotation.y = headingRad;
+      const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
+      const headingRad = Math.atan2(targetPt.x - hole.teePosition.x, targetPt.z - hole.teePosition.z);
+      this.activeTeeMesh.rotation.y = headingRad;
+    }
   }
 
   public snapPinToGreen(holeIndex?: number): boolean {
@@ -1100,7 +1154,15 @@ export class CourseManager {
       sceneryData
     };
 
-    return JSON.stringify(fullExport);
+    const seen = new WeakSet<object>();
+    return JSON.stringify(fullExport, (key, value) => {
+      if (key.startsWith('_')) return undefined;
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value)) return undefined;
+        seen.add(value);
+      }
+      return value;
+    });
   }
 
   public importCourseJSON(jsonStr: string): boolean {

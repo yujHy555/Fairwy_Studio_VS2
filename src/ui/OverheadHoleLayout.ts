@@ -28,6 +28,11 @@ export class OverheadHoleLayout {
   private showDistanceGraphic: boolean = false;
   private modeControlsBound: boolean = false;
   private onOpenCourseGuide?: () => void;
+  private rulerBound: boolean = false;
+  private isRulerDragging: boolean = false;
+  private rulerStart: { x: number; y: number } | null = null;
+  private rulerEnd: { x: number; y: number } | null = null;
+  private lastRulerHoleNum: number | null = null;
 
   public setOnOpenCourseGuide(cb: () => void) {
     this.onOpenCourseGuide = cb;
@@ -112,12 +117,151 @@ export class OverheadHoleLayout {
       if (targetSrc && imgEl.getAttribute('src') !== targetSrc) {
         imgEl.src = targetSrc;
       }
+      if (this.lastRulerHoleNum !== hole.number) {
+        this.lastRulerHoleNum = hole.number;
+        this.clearGraphicRuler();
+      }
+      this.ensureGraphicRulerBound();
       graphicWrap.style.display = 'flex';
       if (radarCanvas) radarCanvas.style.display = 'none';
     } else {
       if (graphicWrap) graphicWrap.style.display = 'none';
       if (radarCanvas) radarCanvas.style.display = 'block';
     }
+  }
+
+  private ensureGraphicRulerBound() {
+    if (this.rulerBound) return;
+    const canvas = document.getElementById('overhead-ruler-canvas') as HTMLCanvasElement | null;
+    if (!canvas) return;
+    this.rulerBound = true;
+
+    const getRelPt = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, e.clientY - rect.top))
+      };
+    };
+
+    canvas.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.isRulerDragging = true;
+      this.rulerStart = getRelPt(e);
+      this.rulerEnd = { ...this.rulerStart };
+      canvas.setPointerCapture?.(e.pointerId);
+      this.redrawGraphicRuler();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!this.isRulerDragging || !this.rulerStart) return;
+      e.stopPropagation();
+      this.rulerEnd = getRelPt(e);
+      this.redrawGraphicRuler();
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (!this.isRulerDragging) return;
+      e.stopPropagation();
+      this.isRulerDragging = false;
+      this.rulerEnd = getRelPt(e);
+      this.redrawGraphicRuler();
+    });
+    canvas.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      this.clearGraphicRuler();
+    });
+  }
+
+  private clearGraphicRuler() {
+    this.isRulerDragging = false;
+    this.rulerStart = null;
+    this.rulerEnd = null;
+    const canvas = document.getElementById('overhead-ruler-canvas') as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  private redrawGraphicRuler() {
+    const canvas = document.getElementById('overhead-ruler-canvas') as HTMLCanvasElement | null;
+    const img = document.getElementById('overhead-hole-img') as HTMLImageElement | null;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cw = Math.max(1, Math.round(rect.width * dpr));
+    const ch = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    if (!this.rulerStart || !this.rulerEnd || !this.lastData) return;
+
+    const dx = this.rulerEnd.x - this.rulerStart.x;
+    const dy = this.rulerEnd.y - this.rulerStart.y;
+    const pxDist = Math.hypot(dx, dy);
+    if (pxDist < 2) return;
+
+    const imgRect = img?.getBoundingClientRect();
+    const imgH = Math.max(40, imgRect?.height || rect.height);
+    const teeToPin = Math.hypot(
+      this.lastData.hole.pinPosition.x - this.lastData.hole.teePosition.x,
+      this.lastData.hole.pinPosition.z - this.lastData.hole.teePosition.z
+    );
+    const holeDistMeters = this.lastData.hole.distances?.yellow || Math.max(60, teeToPin);
+    const metersPerPx = holeDistMeters / (imgH * 0.78);
+    const distM = pxDist * metersPerPx;
+    const distY = distM * 1.09361;
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(this.rulerStart.x, this.rulerStart.y);
+    ctx.lineTo(this.rulerEnd.x, this.rulerEnd.y);
+    ctx.stroke();
+
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(this.rulerStart.x, this.rulerStart.y);
+    ctx.lineTo(this.rulerEnd.x, this.rulerEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    for (const pt of [this.rulerStart, this.rulerEnd]) {
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    }
+
+    const label = `${Math.round(distM)}m (${Math.round(distY)}y)`;
+    ctx.font = '700 11px Inter, system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    const bw = tw + 12;
+    const bh = 20;
+    const midX = (this.rulerStart.x + this.rulerEnd.x) * 0.5;
+    const midY = (this.rulerStart.y + this.rulerEnd.y) * 0.5 - 16;
+    const bx = Math.max(4, Math.min(rect.width - bw - 4, midX - bw * 0.5));
+    const by = Math.max(4, Math.min(rect.height - bh - 4, midY));
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e0f2fe';
+    ctx.fillText(label, bx + 6, by + 14);
+    ctx.restore();
   }
 
   private lastData: OverheadLayoutData | null = null;

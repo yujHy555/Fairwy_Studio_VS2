@@ -58,6 +58,28 @@ export interface ExtractedMapNGHole {
   meta: MapNGCourseMeta;
 }
 
+export interface UnifiedMapNGCourse {
+  baseHeights: Float32Array;
+  heightsWidth: number;
+  heightsLength: number;
+  worldWidth: number;
+  worldLength: number;
+  cellSize: number;
+  minHoleElev: number;
+  maxHoleElev: number;
+  satelliteDataUrl: string | null;
+  courseBoundaryMask: Uint8Array | null;
+  courseCenterWorld: { x: number; z: number };
+  courseSpanMeters: number;
+  meta: MapNGCourseMeta & {
+    cropWestM: number;
+    cropNorthM: number;
+    cropSouthMaxM: number;
+    worldWidth: number;
+    worldLength: number;
+  };
+}
+
 const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 function paethPredictor(a: number, b: number, c: number): number {
@@ -700,6 +722,265 @@ export function extractHoleCrop(
       cropLengthMeters: options.gridLength,
       sourceSpanW: spanW,
       sourceSpanH: spanL
+    }
+  };
+}
+
+export function extractUnifiedSatelliteDataUrl(
+  satelliteImg: HTMLImageElement | null,
+  sourceWidthPx: number,
+  sourceHeightPx: number,
+  mpp: number,
+  cropWestM: number,
+  cropNorthM: number,
+  worldWidth: number,
+  worldLength: number,
+  isolateCourseOnly: boolean = true,
+  footprint?: CourseFootprintMask | null
+): string | null {
+  if (!satelliteImg) return null;
+  const profile = getDeviceProfile();
+  const maxTexDim = Math.min(2048, profile.maxSatelliteTextureSize);
+  const aspect = worldWidth / Math.max(1, worldLength);
+  const outW = aspect >= 1 ? maxTexDim : Math.max(256, Math.round(maxTexDim * aspect));
+  const outH = aspect >= 1 ? Math.max(256, Math.round(maxTexDim / aspect)) : maxTexDim;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const spanW = sourceWidthPx * mpp;
+  const spanL = sourceHeightPx * mpp;
+  const sx = (cropWestM / spanW) * satelliteImg.naturalWidth;
+  const sy = (cropNorthM / spanL) * satelliteImg.naturalHeight;
+  const sw = (worldWidth / spanW) * satelliteImg.naturalWidth;
+  const sh = (worldLength / spanL) * satelliteImg.naturalHeight;
+
+  ctx.fillStyle = '#1e3518';
+  ctx.fillRect(0, 0, outW, outH);
+
+  if (isolateCourseOnly && footprint?.polygonMeters && footprint.polygonMeters.length >= 3) {
+    ctx.save();
+    ctx.beginPath();
+    footprint.polygonMeters.forEach((p, idx) => {
+      const u = (p.x - cropWestM) / Math.max(1, worldWidth);
+      const v = (p.z - cropNorthM) / Math.max(1, worldLength);
+      const px = u * outW;
+      const py = v * outH;
+      if (idx === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(satelliteImg, sx, sy, sw, sh, 0, 0, outW, outH);
+    ctx.restore();
+  } else {
+    ctx.drawImage(satelliteImg, sx, sy, sw, sh, 0, 0, outW, outH);
+    if (isolateCourseOnly && footprint?.gridMask && footprint.gridRes) {
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = footprint.gridRes;
+      maskCanvas.height = footprint.gridRes;
+      const maskCtx = maskCanvas.getContext('2d');
+      if (maskCtx) {
+        const imgData = maskCtx.createImageData(footprint.gridRes, footprint.gridRes);
+        for (let i = 0; i < footprint.gridMask.length; i++) {
+          imgData.data[i * 4 + 3] = footprint.gridMask[i] ? 255 : 0;
+        }
+        maskCtx.putImageData(imgData, 0, 0);
+        const mx = (cropWestM / spanW) * footprint.gridRes;
+        const my = (cropNorthM / spanL) * footprint.gridRes;
+        const mw = (worldWidth / spanW) * footprint.gridRes;
+        const mh = (worldLength / spanL) * footprint.gridRes;
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-in';
+        ctx.drawImage(maskCanvas, mx, my, mw, mh, 0, 0, outW, outH);
+        ctx.globalCompositeOperation = 'destination-over';
+        ctx.fillStyle = '#1e3518';
+        ctx.fillRect(0, 0, outW, outH);
+        ctx.restore();
+      }
+    }
+  }
+
+  return canvas.toDataURL('image/jpeg', 0.90);
+}
+
+/**
+ * Extracts ONE unified, seamless course-wide terrain grid (zero overlapping meshes, zero LOD ridges)
+ * covering only the detected golf course footprint + clean safety padding, with adaptive uniform cellSize.
+ */
+export function extractUnifiedCourseGrid(
+  source: LoadedMapNGSource,
+  options?: {
+    elevationScale?: number;
+    isolateCourseOnly?: boolean;
+    courseFootprint?: CourseFootprintMask | null;
+  }
+): UnifiedMapNGCourse {
+  const { meta, heightmap, satelliteImg } = source;
+  const mpp = meta.metersPerPixel || 1.0;
+  const spanW = heightmap.width * mpp;
+  const spanL = heightmap.height * mpp;
+  const minH = meta.minHeightMeters;
+  const maxH = meta.maxHeightMeters;
+  const scaleElev = options?.elevationScale ?? 1.0;
+  const isolateCourseOnly = options?.isolateCourseOnly !== false;
+  const footprint = isolateCourseOnly ? (options?.courseFootprint || source.courseFootprint || null) : null;
+
+  let minEast = 0;
+  let maxEast = spanW;
+  let minNorth = 0;
+  let maxSouth = spanL;
+
+  if (footprint) {
+    let fMinE = Infinity;
+    let fMaxE = -Infinity;
+    let fMinN = Infinity;
+    let fMaxS = -Infinity;
+    const scanStep = 8;
+    for (let sm = 0; sm <= spanL; sm += scanStep) {
+      for (let em = 0; em <= spanW; em += scanStep) {
+        if (isPointInCourseFootprint(footprint, em, sm, spanW, spanL)) {
+          if (em < fMinE) fMinE = em;
+          if (em > fMaxE) fMaxE = em;
+          if (sm < fMinN) fMinN = sm;
+          if (sm > fMaxS) fMaxS = sm;
+        }
+      }
+    }
+    if (fMaxE - fMinE >= 120 && fMaxS - fMinN >= 120) {
+      const padM = 52;
+      minEast = Math.max(0, Math.floor(fMinE - padM));
+      maxEast = Math.min(spanW, Math.ceil(fMaxE + padM));
+      minNorth = Math.max(0, Math.floor(fMinN - padM));
+      maxSouth = Math.min(spanL, Math.ceil(fMaxS + padM));
+    }
+  }
+
+  const rawW = Math.max(220, maxEast - minEast);
+  const rawL = Math.max(220, maxSouth - minNorth);
+  const area = rawW * rawL;
+  let cellSize = 2.0;
+  if (area > 2_400_000) cellSize = 3.0;
+  else if (area > 1_440_000) cellSize = 2.5;
+  else cellSize = 2.0;
+
+  const gridX = Math.max(20, Math.min(Math.floor(spanW / cellSize), Math.ceil(rawW / cellSize)));
+  const gridZ = Math.max(20, Math.min(Math.floor(spanL / cellSize), Math.ceil(rawL / cellSize)));
+  const worldWidth = gridX * cellSize;
+  const worldLength = gridZ * cellSize;
+
+  const cropWestM = Math.max(0, Math.min(spanW - worldWidth, minEast));
+  const cropNorthM = Math.max(0, Math.min(spanL - worldLength, minNorth));
+  const cropSouthMaxM = cropNorthM + worldLength;
+
+  const cols = gridX + 1;
+  const rows = gridZ + 1;
+  const rawMeters = new Float32Array(cols * rows);
+  let minHoleElev = Infinity;
+  let maxHoleElev = -Infinity;
+
+  for (let z = 0; z < rows; z++) {
+    const wz = z * cellSize;
+    const southM = cropSouthMaxM - wz;
+    const rowOff = z * cols;
+    for (let x = 0; x < cols; x++) {
+      const eastM = cropWestM + x * cellSize;
+      const elev = sampleHeightBilinearMeters(heightmap, minH, maxH, mpp, eastM, southM);
+      rawMeters[rowOff + x] = elev;
+      if (elev < minHoleElev) minHoleElev = elev;
+      if (elev > maxHoleElev) maxHoleElev = elev;
+    }
+  }
+
+  const baseHeights = new Float32Array(cols * rows);
+  for (let i = 0; i < rawMeters.length; i++) {
+    baseHeights[i] = 0.5 + (rawMeters[i] - minHoleElev) * scaleElev;
+  }
+
+  let courseBoundaryMask: Uint8Array | null = null;
+  let courseCenterWorld = { x: worldWidth * 0.5, z: worldLength * 0.5 };
+  let courseSpanMeters = Math.max(worldWidth, worldLength);
+
+  if (footprint) {
+    const mask = new Uint8Array(gridX * gridZ);
+    let insideCount = 0;
+    let sumX = 0;
+    let sumZ = 0;
+    let minWx = Infinity;
+    let maxWx = -Infinity;
+    let minWz = Infinity;
+    let maxWz = -Infinity;
+
+    for (let cz = 0; cz < gridZ; cz++) {
+      const wz = (cz + 0.5) * cellSize;
+      const southM = cropSouthMaxM - wz;
+      const rowOff = cz * gridX;
+      for (let cx = 0; cx < gridX; cx++) {
+        const wx = (cx + 0.5) * cellSize;
+        const eastM = cropWestM + wx;
+        if (isPointInCourseFootprint(footprint, eastM, southM, spanW, spanL)) {
+          mask[rowOff + cx] = 1;
+          insideCount++;
+          sumX += wx;
+          sumZ += wz;
+          if (wx < minWx) minWx = wx;
+          if (wx > maxWx) maxWx = wx;
+          if (wz < minWz) minWz = wz;
+          if (wz > maxWz) maxWz = wz;
+        }
+      }
+    }
+
+    if (insideCount > gridX * gridZ * 0.04) {
+      courseBoundaryMask = mask;
+      courseCenterWorld = { x: sumX / insideCount, z: sumZ / insideCount };
+      courseSpanMeters = Math.max(maxWx - minWx, maxWz - minWz, 420);
+    }
+  }
+
+  const satelliteDataUrl = extractUnifiedSatelliteDataUrl(
+    satelliteImg,
+    heightmap.width,
+    heightmap.height,
+    mpp,
+    cropWestM,
+    cropNorthM,
+    worldWidth,
+    worldLength,
+    isolateCourseOnly,
+    footprint
+  );
+
+  return {
+    baseHeights,
+    heightsWidth: cols,
+    heightsLength: rows,
+    worldWidth,
+    worldLength,
+    cellSize,
+    minHoleElev,
+    maxHoleElev,
+    satelliteDataUrl,
+    courseBoundaryMask,
+    courseCenterWorld,
+    courseSpanMeters,
+    meta: {
+      ...meta,
+      cropOriginX: cropWestM + worldWidth * 0.5,
+      cropOriginZ: cropNorthM + worldLength * 0.5,
+      cropRotationRad: 0,
+      cropWidthMeters: worldWidth,
+      cropLengthMeters: worldLength,
+      sourceSpanW: spanW,
+      sourceSpanH: spanL,
+      cropWestM,
+      cropNorthM,
+      cropSouthMaxM,
+      worldWidth,
+      worldLength
     }
   };
 }

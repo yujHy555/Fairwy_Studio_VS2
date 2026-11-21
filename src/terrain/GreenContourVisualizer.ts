@@ -187,8 +187,9 @@ export class GreenContourVisualizer {
       maxZ = Math.min(this.terrain.length, Math.ceil(greenFeat.centerZ + halfDim));
       hasGreen = true;
     } else {
-      for (let z = 0; z < this.terrain.length; z++) {
-        for (let x = 0; x < this.terrain.width; x++) {
+      const step = Math.max(1, this.terrain.cellSize || 1);
+      for (let z = 0; z < this.terrain.length; z += step) {
+        for (let x = 0; x < this.terrain.width; x += step) {
           if (this.terrain.getSurfaceAt(x, z) === SurfaceType.GREEN) {
             hasGreen = true;
             if (x < minX) minX = x;

@@ -21,6 +21,9 @@ export class CourseGuideModal {
   private currentView: 'overview' | 'hole' = 'overview';
   private activeDetailHoleNum = 1;
   private showDistanceGuide = true;
+  private rulerStart: { x: number; y: number } | null = null;
+  private rulerEnd: { x: number; y: number } | null = null;
+  private isRulerDragging = false;
   private telemetry: CourseGuideTelemetry = {
     activeHoleNum: 1,
     isDemoHole: true,
@@ -111,10 +114,11 @@ export class CourseGuideModal {
               <div class="cg-hole-graphic-frame">
                 <img id="cg-hole-img" class="cg-hole-graphic-img" src="" alt="Hole Overhead Graphic" />
                 <img id="cg-hole-dist-img" class="cg-hole-dist-overlay" src="" alt="Distance Guide Overlay" />
+                <canvas id="cg-ruler-canvas" class="cg-ruler-canvas" title="Click &amp; drag anywhere on hole graphic to measure distance (double-click to clear)"></canvas>
               </div>
               <div class="cg-graphic-toolbar">
                 <button id="btn-cg-toggle-dist" class="cg-dist-toggle is-active">🎯 Distance Guide: ON</button>
-                <span class="cg-metric-note">Distances in meters from middle of Tee</span>
+                <span class="cg-metric-note">Drag anywhere on hole to measure • Distances in meters from Tee</span>
               </div>
               <div class="cg-3d-telemetry-strip" id="cg-3d-telemetry-strip">
                 <!-- Populated dynamically from 3D scene -->
@@ -204,6 +208,142 @@ export class CourseGuideModal {
         this.showHole(this.activeDetailHoleNum >= 18 ? 1 : this.activeDetailHoleNum + 1);
       }
     });
+
+    this.bindRulerEvents();
+  }
+
+  private bindRulerEvents() {
+    const canvas = document.getElementById('cg-ruler-canvas') as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const getRelPt = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, e.clientY - rect.top))
+      };
+    };
+
+    canvas.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.isRulerDragging = true;
+      this.rulerStart = getRelPt(e);
+      this.rulerEnd = { ...this.rulerStart };
+      canvas.setPointerCapture?.(e.pointerId);
+      this.redrawRuler();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!this.isRulerDragging || !this.rulerStart) return;
+      e.stopPropagation();
+      this.rulerEnd = getRelPt(e);
+      this.redrawRuler();
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (!this.isRulerDragging) return;
+      e.stopPropagation();
+      this.isRulerDragging = false;
+      this.rulerEnd = getRelPt(e);
+      this.redrawRuler();
+    });
+    canvas.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      this.clearRuler();
+    });
+  }
+
+  private clearRuler() {
+    this.isRulerDragging = false;
+    this.rulerStart = null;
+    this.rulerEnd = null;
+    const canvas = document.getElementById('cg-ruler-canvas') as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  private redrawRuler() {
+    const canvas = document.getElementById('cg-ruler-canvas') as HTMLCanvasElement | null;
+    const img = document.getElementById('cg-hole-img') as HTMLImageElement | null;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cw = Math.max(1, Math.round(rect.width * dpr));
+    const ch = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    if (!this.rulerStart || !this.rulerEnd) return;
+
+    const dx = this.rulerEnd.x - this.rulerStart.x;
+    const dy = this.rulerEnd.y - this.rulerStart.y;
+    const pxDist = Math.hypot(dx, dy);
+    if (pxDist < 2) return;
+
+    const hole = this.getHole(this.activeDetailHoleNum);
+    const matches3D = !this.telemetry.isDemoHole && this.telemetry.activeHoleNum === this.activeDetailHoleNum;
+    const holeDistMeters =
+      matches3D && this.telemetry.teeToPinMeters > 25
+        ? this.telemetry.teeToPinMeters
+        : (hole?.distances.yellow ?? 360);
+    const imgRect = img?.getBoundingClientRect();
+    const imgH = Math.max(60, imgRect?.height || rect.height);
+    const metersPerPx = holeDistMeters / (imgH * 0.78);
+    const distM = pxDist * metersPerPx;
+    const distY = distM * 1.09361;
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.88)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(this.rulerStart.x, this.rulerStart.y);
+    ctx.lineTo(this.rulerEnd.x, this.rulerEnd.y);
+    ctx.stroke();
+
+    ctx.setLineDash([7, 5]);
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(this.rulerStart.x, this.rulerStart.y);
+    ctx.lineTo(this.rulerEnd.x, this.rulerEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    for (const pt of [this.rulerStart, this.rulerEnd]) {
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    const label = `${Math.round(distM)}m (${Math.round(distY)} yds)`;
+    ctx.font = '700 12px Inter, system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    const bw = tw + 16;
+    const bh = 24;
+    const midX = (this.rulerStart.x + this.rulerEnd.x) * 0.5;
+    const midY = (this.rulerStart.y + this.rulerEnd.y) * 0.5 - 20;
+    const bx = Math.max(6, Math.min(rect.width - bw - 6, midX - bw * 0.5));
+    const by = Math.max(6, Math.min(rect.height - bh - 6, midY));
+
+    ctx.fillStyle = 'rgba(10, 20, 34, 0.94)';
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fef08a';
+    ctx.fillText(label, bx + 8, by + 16);
+    ctx.restore();
   }
 
   private getHole(holeNum: number): KyalamiHoleGuide | undefined {
@@ -278,6 +418,7 @@ export class CourseGuideModal {
   }
 
   public showOverview() {
+    this.clearRuler();
     this.currentView = 'overview';
     document.getElementById('cg-view-overview')?.classList.remove('hidden');
     document.getElementById('cg-view-hole')?.classList.add('hidden');
@@ -291,6 +432,7 @@ export class CourseGuideModal {
   public showHole(holeNum: number) {
     const hole = this.getHole(holeNum);
     if (!hole) return;
+    this.clearRuler();
     this.activeDetailHoleNum = hole.number;
     this.currentView = 'hole';
 
@@ -390,6 +532,7 @@ export class CourseGuideModal {
 
   public close() {
     this.isOpen = false;
+    this.clearRuler();
     this.overlay?.classList.add('hidden');
   }
 

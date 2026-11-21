@@ -4595,8 +4595,8 @@ body.in-designer-mode #club-card-putter {
 }
 
 .course-guide-card {
-  width: min(980px, 92vw);
-  max-height: 88vh;
+  width: min(1240px, 95vw);
+  max-height: 93vh;
   background: linear-gradient(155deg, rgba(13, 21, 36, 0.97), rgba(8, 14, 26, 0.98));
   border: 1px solid rgba(52, 211, 153, 0.42);
   border-radius: 20px;
@@ -4979,14 +4979,14 @@ body.in-designer-mode #club-card-putter {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: 280px;
-  max-height: 400px;
+  min-height: 380px;
+  max-height: 600px;
 }
 
 .cg-hole-graphic-img,
 .cg-hole-dist-overlay {
   max-width: 100%;
-  max-height: 390px;
+  max-height: 580px;
   width: auto;
   height: auto;
   object-fit: contain;
@@ -5227,6 +5227,72 @@ body.in-designer-mode #club-card-putter {
   background: rgba(15, 23, 42, 0.9);
   color: #f8fafc;
   font-size: 12px;
+}
+
+.overhead-graphic-wrap {
+  position: relative;
+}
+
+.cg-ruler-canvas,
+.overhead-ruler-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  z-index: 4;
+  touch-action: none;
+}
+
+.designer-geo-stats {
+  position: fixed;
+  top: 58px;
+  left: 344px;
+  z-index: 110;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(10, 17, 30, 0.84);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #bae6fd;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.38);
+}
+
+body.in-designer-mode .designer-geo-stats {
+  display: inline-flex;
+}
+
+.slider-num-input {
+  width: 54px;
+  min-width: 48px;
+  padding: 2px 4px;
+  border-radius: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  outline: none;
+  flex-shrink: 0;
+}
+
+.slider-num-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25);
+}
+
+.slider-num-input::-webkit-inner-spin-button,
+.slider-num-input::-webkit-outer-spin-button {
+  opacity: 0.65;
 }
 
 

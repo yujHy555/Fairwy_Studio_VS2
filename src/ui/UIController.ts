@@ -154,6 +154,7 @@ export interface UIEventCallbacks {
     courseName?: string;
     kyalamiHoleNum?: number;
   }) => void;
+  onLoadDemoHole?: () => void;
   onSelectKyalamiHole?: (hole: KyalamiHoleGuide) => void;
   onToggleCourseGuide?: () => void;
   onToggleSatelliteOverlay?: () => void;
@@ -438,6 +439,10 @@ export class UIController {
             <span>➕ New Hole</span>
           </button>
 
+          <button id="btn-header-demo-hole" class="btn btn-icon" title="Load &amp; Edit/Play Demo Hole">
+            <span>⛳ Demo Hole</span>
+          </button>
+
           <button id="btn-header-course-guide" class="btn btn-icon" title="Interactive Kyalami Course Guide [L]">
             <span>🗺️ Course Guide</span>
           </button>
@@ -509,6 +514,8 @@ export class UIController {
           </button>
         </div>
       </header>
+
+      <div id="designer-geo-stats" class="designer-geo-stats"></div>
 
       <!-- DESIGNER MODE DRAWER & TOOLBAR -->
       <aside id="designer-panel" class="hidden">
@@ -737,6 +744,7 @@ export class UIController {
             <div class="overhead-canvas-container">
               <div id="overhead-graphic-wrap" class="overhead-graphic-wrap" style="display: none;">
                 <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
+                <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Drag on hole graphic to measure distance (double-click to clear)"></canvas>
               </div>
               <canvas id="overhead-hole-canvas" width="210" height="220"></canvas>
             </div>
@@ -1540,6 +1548,8 @@ export class UIController {
               <div class="dev-stat-card"><span class="dev-stat-val" id="stat-rocks-count">0</span><span class="dev-stat-lbl">Rocks</span></div>
               <div class="dev-stat-card"><span class="dev-stat-val" id="stat-cliffs-count">0</span><span class="dev-stat-lbl">Cliffs</span></div>
               <div class="dev-stat-card"><span class="dev-stat-val" id="stat-bunkers-count">0</span><span class="dev-stat-lbl">Bunkers</span></div>
+              <div class="dev-stat-card"><span class="dev-stat-val" id="stat-tris-count">0</span><span class="dev-stat-lbl">Triangles</span></div>
+              <div class="dev-stat-card"><span class="dev-stat-val" id="stat-verts-count">0</span><span class="dev-stat-lbl">Vertices</span></div>
             </div>
           </div>
           </div>
@@ -3249,6 +3259,9 @@ export class UIController {
     document.getElementById('btn-open-new-hole')?.addEventListener('click', () => {
       this.openNewHoleModal();
     });
+    document.getElementById('btn-header-demo-hole')?.addEventListener('click', () => {
+      this.callbacks.onLoadDemoHole?.();
+    });
     this.setupNewHoleModal();
 
     // HDRI & Skybox Tweaks Listeners
@@ -4030,15 +4043,54 @@ export class UIController {
     }
   }
 
-  public updateDevStats(trees: number, rocks: number, cliffs: number, bunkers: number) {
+  private formatGeoCount(n: number): string {
+    if (!Number.isFinite(n) || n <= 0) return '0';
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return `${Math.round(n)}`;
+  }
+
+  public updateDevStats(
+    trees: number,
+    rocks: number,
+    cliffs: number,
+    bunkers: number,
+    geoStats?: {
+      sceneTris: number;
+      sceneVerts: number;
+      selectedLabel?: string;
+      selectedTris?: number;
+      selectedVerts?: number;
+    }
+  ) {
     const elTrees = document.getElementById('stat-trees-count');
     const elRocks = document.getElementById('stat-rocks-count');
     const elCliffs = document.getElementById('stat-cliffs-count');
     const elBunkers = document.getElementById('stat-bunkers-count');
+    const elTris = document.getElementById('stat-tris-count');
+    const elVerts = document.getElementById('stat-verts-count');
+    const pillEl = document.getElementById('designer-geo-stats');
+
     if (elTrees) elTrees.innerText = `${trees}`;
     if (elRocks) elRocks.innerText = `${rocks}`;
     if (elCliffs) elCliffs.innerText = `${cliffs}`;
     if (elBunkers) elBunkers.innerText = `${bunkers}`;
+
+    if (geoStats) {
+      const trisText = this.formatGeoCount(geoStats.sceneTris);
+      const vertsText = this.formatGeoCount(geoStats.sceneVerts);
+      if (elTris) elTris.innerText = trisText;
+      if (elVerts) elVerts.innerText = vertsText;
+      if (pillEl) {
+        const selPart =
+          geoStats.selectedLabel && geoStats.selectedTris !== undefined && geoStats.selectedVerts !== undefined
+            ? ` &nbsp;|&nbsp; <strong>Sel:</strong> ${geoStats.selectedLabel} (${this.formatGeoCount(geoStats.selectedTris)} tris • ${this.formatGeoCount(geoStats.selectedVerts)} verts)`
+            : '';
+        pillEl.innerHTML = `<span>▲ <strong>Scene:</strong> ${trisText} tris • ${vertsText} verts${selPart}</span>`;
+      }
+    }
+
+    this.syncTypeableSliders();
   }
 
   public setGizmoModeButton(mode: 'none' | 'position' | 'rotation' | 'scale') {
@@ -6182,5 +6234,99 @@ export class UIController {
     document.getElementById('btn-trace-cancel')?.addEventListener('click', () => {
       this.callbacks.onTraceCancel?.();
     });
+
+    this.enhanceSlidersWithTypeableInputs();
+  }
+
+  private sliderPairs: { range: HTMLInputElement; num: HTMLInputElement }[] = [];
+
+  private syncTypeableSliders() {
+    for (let i = this.sliderPairs.length - 1; i >= 0; i--) {
+      const pair = this.sliderPairs[i];
+      if (!document.body.contains(pair.range) || !document.body.contains(pair.num)) {
+        this.sliderPairs.splice(i, 1);
+        continue;
+      }
+      if (document.activeElement !== pair.num && pair.num.value !== pair.range.value) {
+        pair.num.value = pair.range.value;
+      }
+    }
+  }
+
+  private enhanceSlidersWithTypeableInputs() {
+    const upgradeRoot = (root: ParentNode) => {
+      const sliders = root.querySelectorAll('input[type="range"]');
+      sliders.forEach((el) => {
+        const range = el as HTMLInputElement;
+        if (range.dataset.typeableEnhanced === '1') return;
+        range.dataset.typeableEnhanced = '1';
+
+        const num = document.createElement('input');
+        num.type = 'number';
+        num.className = 'slider-num-input';
+        if (range.min !== '') num.min = range.min;
+        if (range.max !== '') num.max = range.max;
+        num.step = range.step || 'any';
+        num.value = range.value;
+        num.title = 'Type an exact numeric value and press Enter';
+
+        const stopKeys = (ev: Event) => ev.stopPropagation();
+        num.addEventListener('pointerdown', stopKeys);
+        num.addEventListener('mousedown', stopKeys);
+        num.addEventListener('keydown', (ev) => {
+          ev.stopPropagation();
+          if (ev.key === 'Enter') {
+            commitValue();
+            num.blur();
+          }
+        });
+
+        const commitValue = () => {
+          const parsed = parseFloat(num.value);
+          if (!Number.isFinite(parsed)) {
+            num.value = range.value;
+            return;
+          }
+          const minVal = range.min !== '' ? parseFloat(range.min) : -Infinity;
+          const maxVal = range.max !== '' ? parseFloat(range.max) : Infinity;
+          const clamped = Math.max(minVal, Math.min(maxVal, parsed));
+          range.value = String(clamped);
+          num.value = range.value;
+          range.dispatchEvent(new Event('input', { bubbles: true }));
+          range.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        num.addEventListener('change', commitValue);
+        num.addEventListener('blur', commitValue);
+
+        range.addEventListener('input', () => {
+          if (document.activeElement !== num) num.value = range.value;
+        });
+        range.addEventListener('change', () => {
+          if (document.activeElement !== num) num.value = range.value;
+        });
+
+        const next = range.nextElementSibling;
+        if (next && next.matches('span, .dev-slider-val, .val-badge')) {
+          next.insertAdjacentElement('afterend', num);
+        } else {
+          range.insertAdjacentElement('afterend', num);
+        }
+        this.sliderPairs.push({ range, num });
+      });
+    };
+
+    upgradeRoot(document);
+
+    let obsTimer: number | null = null;
+    const observer = new MutationObserver(() => {
+      if (obsTimer !== null) return;
+      obsTimer = window.setTimeout(() => {
+        obsTimer = null;
+        upgradeRoot(document);
+        this.syncTypeableSliders();
+      }, 60);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 }

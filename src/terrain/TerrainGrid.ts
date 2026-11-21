@@ -28,6 +28,7 @@ import {
   pointInPolygon,
   signedDistanceToPolygon
 } from './PolygonMath';
+import type { UnifiedMapNGCourse } from './MapNGImporter';
 
 /**
  * Patch Babylon.js bump shaders to guarantee stable TBN frame and clean normal mapping.
@@ -1771,12 +1772,12 @@ export interface StampedFeatureRecord {
 export class TerrainGrid {
   public static readonly MASK_RESOLUTION = 1024;
 
-  public readonly width: number;
-  public readonly length: number;
-  public readonly cols: number; // width + 1
-  public readonly rows: number; // length + 1
-  public readonly blockCols: number;
-  public readonly blockRows: number;
+  public width: number;
+  public length: number;
+  public cols: number; // gridX + 1
+  public rows: number; // gridZ + 1
+  public blockCols: number;
+  public blockRows: number;
 
   public baseHeights: Float32Array;
   public heights: Float32Array;
@@ -1868,6 +1869,10 @@ export class TerrainGrid {
   private tracedSdfData: Uint8Array | null = null;
   private hasAnyTracedSdf: boolean = false;
   public courseBoundaryMask: Uint8Array | null = null;
+  public cellSize: number = 1;
+  public gridX: number = 220;
+  public gridZ: number = 460;
+  public playCorridorBounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
 
   /**
    * Rewrites legacy/pre-Stage-1 2K/missing texture paths to the current 1K/512 PBR assets
@@ -1943,12 +1948,15 @@ export class TerrainGrid {
 
   constructor(scene: Scene, width = GOLF_CONSTANTS.DEFAULT_MAP_WIDTH, length = GOLF_CONSTANTS.DEFAULT_MAP_LENGTH) {
     this.scene = scene;
-    this.width = Math.floor(width);
-    this.length = Math.floor(length);
-    this.cols = this.width + 1;
-    this.rows = this.length + 1;
-    this.blockCols = Math.floor(this.width / 2);
-    this.blockRows = Math.floor(this.length / 2);
+    this.cellSize = 1;
+    this.gridX = Math.max(2, Math.floor(width));
+    this.gridZ = Math.max(2, Math.floor(length));
+    this.width = this.gridX * this.cellSize;
+    this.length = this.gridZ * this.cellSize;
+    this.cols = this.gridX + 1;
+    this.rows = this.gridZ + 1;
+    this.blockCols = Math.floor(this.gridX / 2);
+    this.blockRows = Math.floor(this.gridZ / 2);
 
     const totalVerts = this.cols * this.rows;
     this.baseHeights = new Float32Array(totalVerts);
@@ -2058,45 +2066,47 @@ export class TerrainGrid {
    */
   public generateInitialNaturalTerrain() {
     for (let z = 0; z < this.rows; z++) {
+      const wz = z * this.cellSize;
       for (let x = 0; x < this.cols; x++) {
         const idx = z * this.cols + x;
+        const wx = x * this.cellSize;
 
         let doglegCenterX = 95;
-        if (z > 60 && z <= 210) {
-          const t = (z - 60) / 150;
+        if (wz > 60 && wz <= 210) {
+          const t = (wz - 60) / 150;
           doglegCenterX = 95 + t * t * 14;
-        } else if (z > 210) {
-          const t = Math.min(1.0, (z - 210) / 160);
+        } else if (wz > 210) {
+          const t = Math.min(1.0, (wz - 210) / 160);
           doglegCenterX = 109 + (3 * t * t - 2 * t * t * t) * 41;
         }
 
-        const distFromCorridor = Math.abs(x - doglegCenterX);
+        const distFromCorridor = Math.abs(wx - doglegCenterX);
 
         // 1. Elevated Tee Bluff around (95, 42)
-        const dxTee = (x - 95) / 42;
-        const dzTee = (z - 38) / 40;
+        const dxTee = (wx - 95) / 42;
+        const dzTee = (wz - 38) / 40;
         const teeBluff = 4.6 * Math.exp(-(dxTee * dxTee + dzTee * dzTee));
 
         // 2. Valley floor profile along Z
-        const valleyDip = -0.65 * Math.exp(-Math.pow((z - 195) / 85, 2));
+        const valleyDip = -0.65 * Math.exp(-Math.pow((wz - 195) / 85, 2));
 
         // 3. Lower Putting Green pocket around (148, 360)
-        const dxGreen = (x - 148) / 28;
-        const dzGreen = (z - 360) / 30;
+        const dxGreen = (wx - 148) / 28;
+        const dzGreen = (wz - 360) / 30;
         const greenPocket = -0.95 * Math.exp(-(dxGreen * dxGreen + dzGreen * dzGreen));
 
         // 4. Gentle framing valley hills outside the playable dogleg corridor
         const corridorMargin = Math.max(0, distFromCorridor - 26);
         const valleyWalls =
           Math.pow(corridorMargin / 46, 1.8) * 3.8 +
-          Math.sin(x * 0.04) * Math.cos(z * 0.03) * 0.35 * Math.min(1.0, corridorMargin / 20);
+          Math.sin(wx * 0.04) * Math.cos(wz * 0.03) * 0.35 * Math.min(1.0, corridorMargin / 20);
 
-        const microRoll = Math.sin(x * 0.025 + 0.5) * Math.cos(z * 0.022) * 0.14;
+        const microRoll = Math.sin(wx * 0.025 + 0.5) * Math.cos(wz * 0.022) * 0.14;
 
         let h = 2.2 + teeBluff + valleyDip + greenPocket + valleyWalls + microRoll;
 
-        const edgeDistX = Math.min(x, this.width - x);
-        const edgeDistZ = Math.min(z, this.length - z);
+        const edgeDistX = Math.min(wx, this.width - wx);
+        const edgeDistZ = Math.min(wz, this.length - wz);
         const edgeDist = Math.min(edgeDistX, edgeDistZ);
         if (edgeDist < 18) {
           const t = edgeDist / 18;
@@ -2145,14 +2155,16 @@ export class TerrainGrid {
   public getBaseElevation(worldX: number, worldZ: number): number {
     const clampedX = Math.max(0, Math.min(this.width - 0.0001, worldX));
     const clampedZ = Math.max(0, Math.min(this.length - 0.0001, worldZ));
+    const gx = clampedX / this.cellSize;
+    const gz = clampedZ / this.cellSize;
 
-    const x0 = Math.floor(clampedX);
-    const z0 = Math.floor(clampedZ);
+    const x0 = Math.floor(gx);
+    const z0 = Math.floor(gz);
     const x1 = Math.min(this.cols - 1, x0 + 1);
     const z1 = Math.min(this.rows - 1, z0 + 1);
 
-    const fx = clampedX - x0;
-    const fz = clampedZ - z0;
+    const fx = gx - x0;
+    const fz = gz - z0;
 
     const h00 = this.baseHeights[z0 * this.cols + x0];
     const h10 = this.baseHeights[z0 * this.cols + x1];
@@ -2411,19 +2423,19 @@ export class TerrainGrid {
   private getSubCellVertexHeight(cx: number, cz: number, iu: number, iv: number): number {
     const u = iu * 0.5;
     const v = iv * 0.5;
-    const wx = cx + u;
-    const wz = cz + v;
+    const wx = (cx + u) * this.cellSize;
+    const wz = (cz + v) * this.cellSize;
 
-    if (iu === 0 && (cx === 0 || this.subdividedCells[cz * this.width + (cx - 1)] === 0)) {
+    if (iu === 0 && (cx === 0 || this.subdividedCells[cz * this.gridX + (cx - 1)] === 0)) {
       return (1.0 - v) * this.heights[cz * this.cols + cx] + v * this.heights[(cz + 1) * this.cols + cx];
     }
-    if (iu === 2 && (cx === this.width - 1 || this.subdividedCells[cz * this.width + (cx + 1)] === 0)) {
+    if (iu === 2 && (cx === this.gridX - 1 || this.subdividedCells[cz * this.gridX + (cx + 1)] === 0)) {
       return (1.0 - v) * this.heights[cz * this.cols + (cx + 1)] + v * this.heights[(cz + 1) * this.cols + (cx + 1)];
     }
-    if (iv === 0 && (cz === 0 || this.subdividedCells[(cz - 1) * this.width + cx] === 0)) {
+    if (iv === 0 && (cz === 0 || this.subdividedCells[(cz - 1) * this.gridX + cx] === 0)) {
       return (1.0 - u) * this.heights[cz * this.cols + cx] + u * this.heights[cz * this.cols + (cx + 1)];
     }
-    if (iv === 2 && (cz === this.length - 1 || this.subdividedCells[(cz + 1) * this.width + cx] === 0)) {
+    if (iv === 2 && (cz === this.gridZ - 1 || this.subdividedCells[(cz + 1) * this.gridX + cx] === 0)) {
       return (1.0 - u) * this.heights[(cz + 1) * this.cols + cx] + u * this.heights[(cz + 1) * this.cols + (cx + 1)];
     }
 
@@ -2437,13 +2449,15 @@ export class TerrainGrid {
   public getElevation(worldX: number, worldZ: number): number {
     const clampedX = Math.max(0, Math.min(this.width - 0.0001, worldX));
     const clampedZ = Math.max(0, Math.min(this.length - 0.0001, worldZ));
+    const gx = clampedX / this.cellSize;
+    const gz = clampedZ / this.cellSize;
 
-    const cx = Math.floor(clampedX);
-    const cz = Math.floor(clampedZ);
+    const cx = Math.floor(gx);
+    const cz = Math.floor(gz);
 
-    if (this.subdividedCells[cz * this.width + cx] === 1) {
-      const subX = (clampedX - cx) * 2.0;
-      const subZ = (clampedZ - cz) * 2.0;
+    if (this.subdividedCells[cz * this.gridX + cx] === 1) {
+      const subX = (gx - cx) * 2.0;
+      const subZ = (gz - cz) * 2.0;
       const iu = Math.min(1, Math.floor(subX));
       const iv = Math.min(1, Math.floor(subZ));
       const fx = subX - iu;
@@ -2485,8 +2499,8 @@ export class TerrainGrid {
       const cN = bz < this.blockRows - 1 && this.coarseBlocks[(bz + 1) * this.blockCols + bx] === 1;
 
       if (cW && cE && cS && cN) {
-        const fx = (clampedX - x0) * 0.5;
-        const fz = (clampedZ - z0) * 0.5;
+        const fx = (gx - x0) * 0.5;
+        const fz = (gz - z0) * 0.5;
         if (Math.abs(h00 - h22) < Math.abs(h20 - h02)) {
           return fx >= fz
             ? h00 + fx * (h20 - h00) + fz * (h22 - h20)
@@ -2499,8 +2513,8 @@ export class TerrainGrid {
       }
 
       const hCtr = this.heights[(z0 + 1) * this.cols + (x0 + 1)];
-      const dx = clampedX - (x0 + 1);
-      const dz = clampedZ - (z0 + 1);
+      const dx = gx - (x0 + 1);
+      const dz = gz - (z0 + 1);
       const adx = Math.abs(dx);
       const adz = Math.abs(dz);
       const u = Math.max(adx, adz);
@@ -2544,8 +2558,8 @@ export class TerrainGrid {
     const x1 = Math.min(this.cols - 1, x0 + 1);
     const z1 = Math.min(this.rows - 1, z0 + 1);
 
-    const fx = clampedX - x0;
-    const fz = clampedZ - z0;
+    const fx = gx - x0;
+    const fz = gz - z0;
 
     const h00 = this.heights[z0 * this.cols + x0];
     const h10 = this.heights[z0 * this.cols + x1];
@@ -2582,8 +2596,8 @@ export class TerrainGrid {
       }
     }
 
-    const cx = Math.max(0, Math.min(this.cols - 1, Math.round(worldX)));
-    const cz = Math.max(0, Math.min(this.rows - 1, Math.round(worldZ)));
+    const cx = Math.max(0, Math.min(this.cols - 1, Math.round(worldX / this.cellSize)));
+    const cz = Math.max(0, Math.min(this.rows - 1, Math.round(worldZ / this.cellSize)));
     return this.surfaceTypes[cz * this.cols + cx] as SurfaceType;
   }
 
@@ -2612,17 +2626,19 @@ export class TerrainGrid {
     targetFlattenHeight?: number
   ) {
     if (radius <= 0.01 || strength <= 0.001) return;
-    const minX = Math.max(0, Math.floor(centerX - radius));
-    const maxX = Math.min(this.cols - 1, Math.ceil(centerX + radius));
-    const minZ = Math.max(0, Math.floor(centerZ - radius));
-    const maxZ = Math.min(this.rows - 1, Math.ceil(centerZ + radius));
+    const minX = Math.max(0, Math.floor((centerX - radius) / this.cellSize));
+    const maxX = Math.min(this.cols - 1, Math.ceil((centerX + radius) / this.cellSize));
+    const minZ = Math.max(0, Math.floor((centerZ - radius) / this.cellSize));
+    const maxZ = Math.min(this.rows - 1, Math.ceil((centerZ + radius) / this.cellSize));
 
     const flattenHeight = targetFlattenHeight ?? this.getBaseElevation(centerX, centerZ);
 
     for (let z = minZ; z <= maxZ; z++) {
+      const wz = z * this.cellSize;
       for (let x = minX; x <= maxX; x++) {
-        const dx = x - centerX;
-        const dz = z - centerZ;
+        const wx = x * this.cellSize;
+        const dx = wx - centerX;
+        const dz = wz - centerZ;
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > radius) continue;
 
@@ -2739,19 +2755,21 @@ export class TerrainGrid {
     }
 
     // Bounded search window: only rasterize cells within fairway bounding box + safety margin (38m)
-    const minX = Math.max(0, Math.floor(Math.min(...points.map(p => p.x)) - 38));
-    const maxX = Math.min(this.cols - 1, Math.ceil(Math.max(...points.map(p => p.x)) + 38));
-    const minZ = Math.max(0, Math.floor(Math.min(...points.map(p => p.z)) - 38));
-    const maxZ = Math.min(this.rows - 1, Math.ceil(Math.max(...points.map(p => p.z)) + 38));
+    const minX = Math.max(0, Math.floor((Math.min(...points.map(p => p.x)) - 38) / this.cellSize));
+    const maxX = Math.min(this.cols - 1, Math.ceil((Math.max(...points.map(p => p.x)) + 38) / this.cellSize));
+    const minZ = Math.max(0, Math.floor((Math.min(...points.map(p => p.z)) - 38) / this.cellSize));
+    const maxZ = Math.min(this.rows - 1, Math.ceil((Math.max(...points.map(p => p.z)) + 38) / this.cellSize));
 
     for (let z = minZ; z <= maxZ; z++) {
+      const wz = z * this.cellSize;
       for (let x = minX; x <= maxX; x++) {
+        const wx = x * this.cellSize;
         let minNormDist = 999;
 
         for (let i = 2; i < samples - 1; i++) {
           const sp = spine[i];
-          const dx = x - sp.x;
-          const dz = z - sp.z;
+          const dx = wx - sp.x;
+          const dz = wz - sp.z;
           const lat = dx * (-sp.tz) + dz * sp.tx;
           const lon = dx * sp.tx + dz * sp.tz;
           const halfW = Math.max(1.5, lat >= 0 ? sp.leftW : sp.rightW);
@@ -2856,10 +2874,10 @@ export class TerrainGrid {
     const halfL = effLength * 0.5;
     const maxDim = Math.max(effWidth, effLength) * 1.1;
 
-    const minX = Math.max(0, Math.floor(centerX - maxDim));
-    const maxX = Math.min(this.cols - 1, Math.ceil(centerX + maxDim));
-    const minZ = Math.max(0, Math.floor(centerZ - maxDim));
-    const maxZ = Math.min(this.rows - 1, Math.ceil(centerZ + maxDim));
+    const minX = Math.max(0, Math.floor((centerX - maxDim) / this.cellSize));
+    const maxX = Math.min(this.cols - 1, Math.ceil((centerX + maxDim) / this.cellSize));
+    const minZ = Math.max(0, Math.floor((centerZ - maxDim) / this.cellSize));
+    const maxZ = Math.min(this.rows - 1, Math.ceil((centerZ + maxDim) / this.cellSize));
 
     const cosR = Math.cos(-rotationRad);
     const sinR = Math.sin(-rotationRad);
@@ -2867,9 +2885,11 @@ export class TerrainGrid {
     const effBaseElevation = baseElevation ?? this.getBaseElevation(centerX, centerZ);
 
     for (let z = minZ; z <= maxZ; z++) {
+      const wz = z * this.cellSize;
       for (let x = minX; x <= maxX; x++) {
-        const dx = x - centerX;
-        const dz = z - centerZ;
+        const wx = x * this.cellSize;
+        const dx = wx - centerX;
+        const dz = wz - centerZ;
 
         const localX = dx * cosR - dz * sinR;
         const localZ = dx * sinR + dz * cosR;
@@ -3329,8 +3349,92 @@ export class TerrainGrid {
     }
   }
 
-  public createFlatTerrain(elevation = 2.0, clearFeatures = true, clearSatellite = true) {
+  public resizeGrid(
+    newWidth: number,
+    newLength: number,
+    newCellSize: number = 1,
+    rebuild: boolean = true
+  ) {
+    this.cellSize = Math.max(0.5, newCellSize);
+    this.gridX = Math.max(2, Math.round(newWidth / this.cellSize));
+    this.gridZ = Math.max(2, Math.round(newLength / this.cellSize));
+    this.width = this.gridX * this.cellSize;
+    this.length = this.gridZ * this.cellSize;
+    this.cols = this.gridX + 1;
+    this.rows = this.gridZ + 1;
+    this.blockCols = Math.floor(this.gridX / 2);
+    this.blockRows = Math.floor(this.gridZ / 2);
+
+    const totalVerts = this.cols * this.rows;
+    this.baseHeights = new Float32Array(totalVerts);
+    this.heights = new Float32Array(totalVerts);
+    this.surfaceTypes = new Uint8Array(totalVerts);
+    this.subdividedCells = new Uint8Array(this.gridX * this.gridZ);
+    this.coarseBlocks = new Uint8Array(this.blockCols * this.blockRows);
+
+    this.positions = new Float32Array(totalVerts * 3);
+    this.normals = new Float32Array(totalVerts * 3);
+    this.uvs = new Float32Array(totalVerts * 2);
+    this.colors = new Float32Array(totalVerts * 4);
+    this.indices = new Uint32Array(this.gridX * this.gridZ * 6);
+
+    this.pristineNaturalHeights = null;
+    this.cachedBaseCourseHeights = null;
+    this.cachedBaseCourseSurfaceTypes = null;
     this.courseBoundaryMask = null;
+    this.playCorridorBounds = null;
+    this.dragStaticBaseHeights = null;
+    this.dragStaticFeatureIdx = -1;
+    this.isBaseCourseDirty = true;
+
+    if (this.groundShaderPlugin) {
+      this.groundShaderPlugin.terrainWidth = this.width;
+      this.groundShaderPlugin.terrainLength = this.length;
+    }
+
+    this.groundUvScaleU = Math.max(10, Math.round(this.width * 0.5));
+    this.groundUvScaleV = Math.max(10, Math.round(this.length * 0.5));
+    const applyUv = (tex: BaseTexture | null) => {
+      if (tex instanceof Texture) {
+        tex.uScale = Math.max(0.02, this.groundUvScaleU);
+        tex.vScale = Math.max(0.02, this.groundUvScaleV);
+      }
+    };
+    applyUv(this.pbrGrassColorTex);
+    applyUv(this.pbrGrassNormalTex);
+    applyUv(this.pbrGrassRoughTex);
+    this.terrainMaterial?.markAsDirty(Material.TextureDirtyFlag | Material.MiscDirtyFlag);
+
+    if (rebuild) {
+      this.redrawSplatTexture();
+      this.rebuildMesh(false);
+    }
+  }
+
+  public setPlayCorridorBounds(
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null
+  ) {
+    this.playCorridorBounds = bounds ? { ...bounds } : null;
+    this.rebuildMesh(false);
+  }
+
+  public createFlatTerrain(
+    elevation = 2.0,
+    clearFeatures = true,
+    clearSatellite = true,
+    targetWidth = GOLF_CONSTANTS.DEFAULT_MAP_WIDTH,
+    targetLength = GOLF_CONSTANTS.DEFAULT_MAP_LENGTH,
+    targetCellSize = 1
+  ) {
+    if (
+      Math.abs(this.width - targetWidth) > 0.01 ||
+      Math.abs(this.length - targetLength) > 0.01 ||
+      Math.abs(this.cellSize - targetCellSize) > 0.01
+    ) {
+      this.resizeGrid(targetWidth, targetLength, targetCellSize, false);
+    }
+    this.courseBoundaryMask = null;
+    this.playCorridorBounds = null;
     this.baseHeights.fill(elevation);
     this.setPristineNaturalHeights(this.baseHeights);
     this.heights.fill(elevation);
@@ -3354,6 +3458,7 @@ export class TerrainGrid {
     }
 
     this.syncPluginLayerState();
+    this.syncAnalyticalFeatureUniforms();
     this.redrawSplatTexture();
     this.rebuildMesh(false);
   }
@@ -3370,12 +3475,13 @@ export class TerrainGrid {
         `Heightmap grid mismatch: got ${newBaseHeights.length}, expected ${this.baseHeights.length}`
       );
     }
+    this.playCorridorBounds = null;
     this.baseHeights.set(newBaseHeights);
     this.setPristineNaturalHeights(newBaseHeights);
     this.heights.set(newBaseHeights);
     this.surfaceTypes.fill(SurfaceType.ROUGH);
     this.courseBoundaryMask =
-      courseBoundaryMask && courseBoundaryMask.length === this.width * this.length
+      courseBoundaryMask && courseBoundaryMask.length === this.gridX * this.gridZ
         ? new Uint8Array(courseBoundaryMask)
         : null;
     this.isBaseCourseDirty = true;
@@ -3400,6 +3506,47 @@ export class TerrainGrid {
       this.setSatelliteOverlayTexture(satelliteDataUrl, satelliteOpacity);
     }
     this.syncPluginLayerState();
+    this.syncAnalyticalFeatureUniforms();
+    this.redrawSplatTexture();
+    this.rebuildMesh(false);
+  }
+
+  public loadUnifiedMapNGCourse(
+    course: UnifiedMapNGCourse,
+    satelliteOpacity = 0.85,
+    clearFeatures = true
+  ) {
+    this.resizeGrid(course.worldWidth, course.worldLength, course.cellSize, false);
+    this.baseHeights.set(course.baseHeights);
+    this.setPristineNaturalHeights(course.baseHeights);
+    this.heights.set(course.baseHeights);
+    this.surfaceTypes.fill(SurfaceType.ROUGH);
+    this.courseBoundaryMask =
+      course.courseBoundaryMask && course.courseBoundaryMask.length === this.gridX * this.gridZ
+        ? new Uint8Array(course.courseBoundaryMask)
+        : null;
+    this.playCorridorBounds = null;
+    this.isBaseCourseDirty = true;
+
+    if (clearFeatures) {
+      this.stampedFeatures = [];
+      this.hasAnyTracedSdf = false;
+      if (this.tracedSdfData) {
+        this.tracedSdfData.fill(255);
+        this.tracedSdfTex?.update(this.tracedSdfData);
+      }
+      if (this.groundShaderPlugin) {
+        this.groundShaderPlugin.tracedCount = 0;
+      }
+    } else {
+      for (const f of this.stampedFeatures) {
+        f.baseElevation = this.getBaseElevation(f.centerX, f.centerZ);
+      }
+    }
+
+    this.setSatelliteOverlayTexture(course.satelliteDataUrl, satelliteOpacity);
+    this.syncPluginLayerState();
+    this.syncAnalyticalFeatureUniforms();
     this.redrawSplatTexture();
     this.rebuildMesh(false);
   }
@@ -3507,12 +3654,14 @@ export class TerrainGrid {
   private getHeightFromArray(arr: Float32Array, worldX: number, worldZ: number): number {
     const clampedX = Math.max(0, Math.min(this.width - 0.0001, worldX));
     const clampedZ = Math.max(0, Math.min(this.length - 0.0001, worldZ));
-    const x0 = Math.floor(clampedX);
-    const z0 = Math.floor(clampedZ);
+    const gx = clampedX / this.cellSize;
+    const gz = clampedZ / this.cellSize;
+    const x0 = Math.floor(gx);
+    const z0 = Math.floor(gz);
     const x1 = Math.min(this.cols - 1, x0 + 1);
     const z1 = Math.min(this.rows - 1, z0 + 1);
-    const fx = clampedX - x0;
-    const fz = clampedZ - z0;
+    const fx = gx - x0;
+    const fz = gz - z0;
     const h00 = arr[z0 * this.cols + x0];
     const h10 = arr[z0 * this.cols + x1];
     const h01 = arr[z1 * this.cols + x0];
@@ -3524,17 +3673,19 @@ export class TerrainGrid {
     const halfW = feat.width * 0.5;
     const halfL = feat.length * 0.5;
     const maxDim = Math.max(feat.width, feat.length) * 1.1;
-    const minX = Math.max(0, Math.floor(feat.centerX - maxDim));
-    const maxX = Math.min(this.cols - 1, Math.ceil(feat.centerX + maxDim));
-    const minZ = Math.max(0, Math.floor(feat.centerZ - maxDim));
-    const maxZ = Math.min(this.rows - 1, Math.ceil(feat.centerZ + maxDim));
+    const minX = Math.max(0, Math.floor((feat.centerX - maxDim) / this.cellSize));
+    const maxX = Math.min(this.cols - 1, Math.ceil((feat.centerX + maxDim) / this.cellSize));
+    const minZ = Math.max(0, Math.floor((feat.centerZ - maxDim) / this.cellSize));
+    const maxZ = Math.min(this.rows - 1, Math.ceil((feat.centerZ + maxDim) / this.cellSize));
     const cosR = Math.cos(-feat.rotationRad);
     const sinR = Math.sin(-feat.rotationRad);
 
     for (let z = minZ; z <= maxZ; z++) {
+      const wz = z * this.cellSize;
       for (let x = minX; x <= maxX; x++) {
-        const dx = x - feat.centerX;
-        const dz = z - feat.centerZ;
+        const wx = x * this.cellSize;
+        const dx = wx - feat.centerX;
+        const dz = wz - feat.centerZ;
         const localX = dx * cosR - dz * sinR;
         const localZ = dx * sinR + dz * cosR;
         const normDist = Math.hypot(localX / halfW, localZ / halfL);
@@ -3580,24 +3731,27 @@ export class TerrainGrid {
    */
   private updateDraftRegionHeights(minX: number, maxX: number, minZ: number, maxZ: number) {
     if (!this.terrainMesh || !this.isDraftMode || this.positions.length !== this.cols * this.rows * 3) return;
-    const x0 = Math.max(0, Math.floor(minX) - 2);
-    const x1 = Math.min(this.width, Math.ceil(maxX) + 2);
-    const z0 = Math.max(0, Math.floor(minZ) - 2);
-    const z1 = Math.min(this.length, Math.ceil(maxZ) + 2);
+    const x0 = Math.max(0, Math.floor(minX / this.cellSize) - 2);
+    const x1 = Math.min(this.gridX, Math.ceil(maxX / this.cellSize) + 2);
+    const z0 = Math.max(0, Math.floor(minZ / this.cellSize) - 2);
+    const z1 = Math.min(this.gridZ, Math.ceil(maxZ / this.cellSize) + 2);
 
     for (let z = z0; z <= z1; z++) {
+      const wz = z * this.cellSize;
       for (let x = x0; x <= x1; x++) {
+        const wx = x * this.cellSize;
         const vIdx = z * this.cols + x;
-        const h = this.evaluateAnalyticalElevation(x, z);
+        const h = this.evaluateAnalyticalElevation(wx, wz);
         this.heights[vIdx] = h;
         this.positions[vIdx * 3 + 1] = h;
       }
     }
 
     const nx0 = Math.max(0, x0 - 1);
-    const nx1 = Math.min(this.width, x1 + 1);
+    const nx1 = Math.min(this.gridX, x1 + 1);
     const nz0 = Math.max(0, z0 - 1);
-    const nz1 = Math.min(this.length, z1 + 1);
+    const nz1 = Math.min(this.gridZ, z1 + 1);
+    const spanInv = 1 / (2 * this.cellSize);
     for (let z = nz0; z <= nz1; z++) {
       for (let x = nx0; x <= nx1; x++) {
         const vIdx = z * this.cols + x;
@@ -3607,9 +3761,9 @@ export class TerrainGrid {
         const hD = z > 0 ? this.heights[vIdx - this.cols] : hC;
         const hU = z < this.rows - 1 ? this.heights[vIdx + this.cols] : hC;
 
-        const nx = (hL - hR) * 0.5;
+        const nx = (hL - hR) * spanInv;
         const ny = 1.0;
-        const nz = (hD - hU) * 0.5;
+        const nz = (hD - hU) * spanInv;
         const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1.0;
 
         const pIdx = vIdx * 3;
@@ -3636,10 +3790,10 @@ export class TerrainGrid {
     let dMaxZ = Math.max(oldBounds.maxZ, newBounds.maxZ);
 
     if (feat.surfaceType === SurfaceType.GREEN && this.dragStaticBaseHeights) {
-      const rx0 = Math.max(0, Math.floor(dMinX) - 2);
-      const rx1 = Math.min(this.cols - 1, Math.ceil(dMaxX) + 2);
-      const rz0 = Math.max(0, Math.floor(dMinZ) - 2);
-      const rz1 = Math.min(this.rows - 1, Math.ceil(dMaxZ) + 2);
+      const rx0 = Math.max(0, Math.floor(dMinX / this.cellSize) - 2);
+      const rx1 = Math.min(this.cols - 1, Math.ceil(dMaxX / this.cellSize) + 2);
+      const rz0 = Math.max(0, Math.floor(dMinZ / this.cellSize) - 2);
+      const rz1 = Math.min(this.rows - 1, Math.ceil(dMaxZ / this.cellSize) + 2);
       for (let z = rz0; z <= rz1; z++) {
         const rowOff = z * this.cols;
         for (let x = rx0; x <= rx1; x++) {
@@ -5511,12 +5665,19 @@ export class TerrainGrid {
     }
 
     return {
+      gridWidth: this.width,
+      gridLength: this.length,
+      cellSize: this.cellSize,
       baseHeights: compactBaseHeights,
       heights: compactHeights,
       surfaceTypes: Array.from(this.surfaceTypes),
       stampedFeatures: this.stampedFeatures.map(f => {
-        const { customTile, ...rest } = f;
-        return rest;
+        const clean: Record<string, any> = {};
+        for (const [k, v] of Object.entries(f)) {
+          if (k === 'customTile' || k.startsWith('_')) continue;
+          clean[k] = v;
+        }
+        return clean;
       }),
       groundSettings: this.getGroundUvSettings(),
       lastEditedSandFeatureIdx: this.lastEditedSandFeatureIdx,
@@ -5528,8 +5689,29 @@ export class TerrainGrid {
   public importTerrainState(state: any): boolean {
     if (!state) return false;
     try {
+      const targetW =
+        typeof state.gridWidth === 'number' && state.gridWidth > 0
+          ? state.gridWidth
+          : GOLF_CONSTANTS.DEFAULT_MAP_WIDTH;
+      const targetL =
+        typeof state.gridLength === 'number' && state.gridLength > 0
+          ? state.gridLength
+          : GOLF_CONSTANTS.DEFAULT_MAP_LENGTH;
+      const targetCell =
+        typeof state.cellSize === 'number' && state.cellSize > 0
+          ? state.cellSize
+          : 1;
+      if (
+        Math.abs(targetW - this.width) > 0.01 ||
+        Math.abs(targetL - this.length) > 0.01 ||
+        Math.abs(targetCell - this.cellSize) > 0.01
+      ) {
+        this.resizeGrid(targetW, targetL, targetCell, false);
+      }
+      this.playCorridorBounds = null;
       if (state.baseHeights && state.baseHeights.length === this.baseHeights.length) {
         this.baseHeights.set(state.baseHeights);
+        this.pristineNaturalHeights = new Float32Array(this.baseHeights);
       }
       if (state.heights && state.heights.length === this.heights.length) {
         this.heights.set(state.heights);
@@ -6538,17 +6720,23 @@ export class TerrainGrid {
     const cols = this.cols;
     const rows = this.rows;
 
-    // Optional course footprint trim mask: keep course interior + 6m halo around stamped/traced features
+    // Optional course footprint trim mask + Play-Mode corridor culling
     let effectiveMask: Uint8Array | null = null;
-    if (this.courseBoundaryMask && this.courseBoundaryMask.length === this.width * this.length) {
+    if (this.courseBoundaryMask && this.courseBoundaryMask.length === this.gridX * this.gridZ) {
       effectiveMask = new Uint8Array(this.courseBoundaryMask);
+    } else if (this.playCorridorBounds) {
+      effectiveMask = new Uint8Array(this.gridX * this.gridZ);
+      effectiveMask.fill(1);
+    }
+
+    if (effectiveMask && !this.playCorridorBounds) {
       for (const feat of this.stampedFeatures) {
-        const minX = Math.max(0, Math.floor(feat.centerX - feat.width * 0.5 - 6));
-        const maxX = Math.min(this.width - 1, Math.ceil(feat.centerX + feat.width * 0.5 + 6));
-        const minZ = Math.max(0, Math.floor(feat.centerZ - feat.length * 0.5 - 6));
-        const maxZ = Math.min(this.length - 1, Math.ceil(feat.centerZ + feat.length * 0.5 + 6));
+        const minX = Math.max(0, Math.floor((feat.centerX - feat.width * 0.5 - 6) / this.cellSize));
+        const maxX = Math.min(this.gridX - 1, Math.ceil((feat.centerX + feat.width * 0.5 + 6) / this.cellSize));
+        const minZ = Math.max(0, Math.floor((feat.centerZ - feat.length * 0.5 - 6) / this.cellSize));
+        const maxZ = Math.min(this.gridZ - 1, Math.ceil((feat.centerZ + feat.length * 0.5 + 6) / this.cellSize));
         for (let z = minZ; z <= maxZ; z++) {
-          const rowOff = z * this.width;
+          const rowOff = z * this.gridX;
           for (let x = minX; x <= maxX; x++) {
             effectiveMask[rowOff + x] = 1;
           }
@@ -6556,10 +6744,31 @@ export class TerrainGrid {
       }
     }
 
+    if (effectiveMask && this.playCorridorBounds) {
+      const cb = this.playCorridorBounds;
+      for (let cz = 0; cz < this.gridZ; cz++) {
+        const wz = (cz + 0.5) * this.cellSize;
+        const rowOff = cz * this.gridX;
+        const outZ = wz < cb.minZ || wz > cb.maxZ;
+        for (let cx = 0; cx < this.gridX; cx++) {
+          if (outZ) {
+            effectiveMask[rowOff + cx] = 0;
+            continue;
+          }
+          const wx = (cx + 0.5) * this.cellSize;
+          if (wx < cb.minX || wx > cb.maxX) {
+            effectiveMask[rowOff + cx] = 0;
+          }
+        }
+      }
+    }
+
     // 1. Update integer grid heights from continuous analytical elevation
     for (let z = 0; z < rows; z++) {
+      const wz = z * this.cellSize;
       for (let x = 0; x < cols; x++) {
-        this.heights[z * cols + x] = this.evaluateAnalyticalElevation(x, z);
+        const wx = x * this.cellSize;
+        this.heights[z * cols + x] = this.evaluateAnalyticalElevation(wx, wz);
       }
     }
 
@@ -6568,11 +6777,11 @@ export class TerrainGrid {
     let subCellCount = 0;
 
     if (!isDraft) {
-      for (let cz = 0; cz < this.length; cz++) {
-        const midZ = cz + 0.5;
-        for (let cx = 0; cx < this.width; cx++) {
-          if (effectiveMask && effectiveMask[cz * this.width + cx] === 0) continue;
-          const midX = cx + 0.5;
+      for (let cz = 0; cz < this.gridZ; cz++) {
+        const midZ = (cz + 0.5) * this.cellSize;
+        for (let cx = 0; cx < this.gridX; cx++) {
+          if (effectiveMask && effectiveMask[cz * this.gridX + cx] === 0) continue;
+          const midX = (cx + 0.5) * this.cellSize;
           let isSub = false;
 
           for (const feat of this.stampedFeatures) {
@@ -6665,33 +6874,34 @@ export class TerrainGrid {
           }
 
           if (isSub) {
-            this.subdividedCells[cz * this.width + cx] = 1;
+            this.subdividedCells[cz * this.gridX + cx] = 1;
             subCellCount++;
           }
         }
       }
     }
 
-    // 2b. Identify 2m x 2m coarse Rough macro-blocks
+    // 2b. Identify 2m x 2m coarse Rough macro-blocks (1m base terrain only; unified MapNG stays uniform density)
     this.coarseBlocks.fill(0);
+    if (this.cellSize <= 1.01) {
     for (let bz = 0; bz < this.blockRows; bz++) {
       const z0 = bz * 2;
       for (let bx = 0; bx < this.blockCols; bx++) {
         const x0 = bx * 2;
         if (
           effectiveMask &&
-          (effectiveMask[z0 * this.width + x0] === 0 ||
-            effectiveMask[z0 * this.width + (x0 + 1)] === 0 ||
-            effectiveMask[(z0 + 1) * this.width + x0] === 0 ||
-            effectiveMask[(z0 + 1) * this.width + (x0 + 1)] === 0)
+          (effectiveMask[z0 * this.gridX + x0] === 0 ||
+            effectiveMask[z0 * this.gridX + (x0 + 1)] === 0 ||
+            effectiveMask[(z0 + 1) * this.gridX + x0] === 0 ||
+            effectiveMask[(z0 + 1) * this.gridX + (x0 + 1)] === 0)
         ) {
           continue;
         }
         if (
-          this.subdividedCells[z0 * this.width + x0] === 1 ||
-          this.subdividedCells[z0 * this.width + (x0 + 1)] === 1 ||
-          this.subdividedCells[(z0 + 1) * this.width + x0] === 1 ||
-          this.subdividedCells[(z0 + 1) * this.width + (x0 + 1)] === 1
+          this.subdividedCells[z0 * this.gridX + x0] === 1 ||
+          this.subdividedCells[z0 * this.gridX + (x0 + 1)] === 1 ||
+          this.subdividedCells[(z0 + 1) * this.gridX + x0] === 1 ||
+          this.subdividedCells[(z0 + 1) * this.gridX + (x0 + 1)] === 1
         ) {
           continue;
         }
@@ -6710,6 +6920,7 @@ export class TerrainGrid {
         }
       }
     }
+    }
 
     // Precompute exact triangle index count for single-allocation build
     let totalIndices = 0;
@@ -6727,15 +6938,15 @@ export class TerrainGrid {
         }
       }
     }
-    for (let cz = 0; cz < this.length; cz++) {
+    for (let cz = 0; cz < this.gridZ; cz++) {
       const bz = cz >> 1;
-      for (let cx = 0; cx < this.width; cx++) {
-        if (effectiveMask && effectiveMask[cz * this.width + cx] === 0) continue;
+      for (let cx = 0; cx < this.gridX; cx++) {
+        if (effectiveMask && effectiveMask[cz * this.gridX + cx] === 0) continue;
         const bx = cx >> 1;
         if (bx < this.blockCols && bz < this.blockRows && this.coarseBlocks[bz * this.blockCols + bx] === 1) {
           continue;
         }
-        totalIndices += this.subdividedCells[cz * this.width + cx] === 1 ? 24 : 6;
+        totalIndices += this.subdividedCells[cz * this.gridX + cx] === 1 ? 24 : 6;
       }
     }
 
@@ -6756,22 +6967,25 @@ export class TerrainGrid {
         const uIdx = vIdx * 2;
         const cIdx = vIdx * 4;
 
+        const wx = x * this.cellSize;
+        const wz = z * this.cellSize;
         const hC = this.heights[vIdx];
-        this.positions[pIdx] = x;
+        this.positions[pIdx] = wx;
         this.positions[pIdx + 1] = hC;
-        this.positions[pIdx + 2] = z;
+        this.positions[pIdx + 2] = wz;
 
-        this.uvs[uIdx] = x / this.width;
-        this.uvs[uIdx + 1] = z / this.length;
+        this.uvs[uIdx] = wx / this.width;
+        this.uvs[uIdx + 1] = wz / this.length;
 
         const hL = x > 0 ? this.heights[vIdx - 1] : hC;
         const hR = x < cols - 1 ? this.heights[vIdx + 1] : hC;
         const hD = z > 0 ? this.heights[vIdx - cols] : hC;
         const hU = z < rows - 1 ? this.heights[vIdx + cols] : hC;
 
-        let nx = (hL - hR) * 0.5;
+        const baseInvSpan = 1 / (2 * this.cellSize);
+        let nx = (hL - hR) * baseInvSpan;
         let ny = Math.max(0.72, 1.0);
-        let nz = (hD - hU) * 0.5;
+        let nz = (hD - hU) * baseInvSpan;
         const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1.0;
 
         this.normals[pIdx] = nx / len;
@@ -6781,10 +6995,10 @@ export class TerrainGrid {
         let cavityAO = 1.0;
         if (!isDraft && this.surfaceTypes[vIdx] === SurfaceType.ROUGH) {
           const nearSub =
-            (z > 0 && x > 0 && this.subdividedCells[(z - 1) * this.width + (x - 1)] === 1) ||
-            (z > 0 && x < this.width && this.subdividedCells[(z - 1) * this.width + x] === 1) ||
-            (z < this.length && x > 0 && this.subdividedCells[z * this.width + (x - 1)] === 1) ||
-            (z < this.length && x < this.width && this.subdividedCells[z * this.width + x] === 1);
+            (z > 0 && x > 0 && this.subdividedCells[(z - 1) * this.gridX + (x - 1)] === 1) ||
+            (z > 0 && x < this.gridX && this.subdividedCells[(z - 1) * this.gridX + x] === 1) ||
+            (z < this.gridZ && x > 0 && this.subdividedCells[z * this.gridX + (x - 1)] === 1) ||
+            (z < this.gridZ && x < this.gridX && this.subdividedCells[z * this.gridX + x] === 1);
           if (!nearSub) {
             const laplacian = ((hL + hR + hD + hU) * 0.25) - hC;
             cavityAO = Math.max(0.95, Math.min(1.02, 1.0 - laplacian * 0.05));
@@ -6793,7 +7007,7 @@ export class TerrainGrid {
         this.colors[cIdx] = cavityAO;
         this.colors[cIdx + 1] = cavityAO;
         this.colors[cIdx + 2] = cavityAO;
-        this.colors[cIdx + 3] = this.getGrassMaskAt(x, z);
+        this.colors[cIdx + 3] = this.getGrassMaskAt(wx, wz);
       }
     }
 
@@ -6857,17 +7071,17 @@ export class TerrainGrid {
       }
     }
 
-    const eps = 0.35;
-    for (let cz = 0; cz < this.length; cz++) {
+    const eps = Math.max(0.25, this.cellSize * 0.35);
+    for (let cz = 0; cz < this.gridZ; cz++) {
       const bz = cz >> 1;
-      for (let cx = 0; cx < this.width; cx++) {
-        if (effectiveMask && effectiveMask[cz * this.width + cx] === 0) continue;
+      for (let cx = 0; cx < this.gridX; cx++) {
+        if (effectiveMask && effectiveMask[cz * this.gridX + cx] === 0) continue;
         const bx = cx >> 1;
         if (bx < this.blockCols && bz < this.blockRows && this.coarseBlocks[bz * this.blockCols + bx] === 1) {
           continue;
         }
 
-        if (this.subdividedCells[cz * this.width + cx] === 0) {
+        if (this.subdividedCells[cz * this.gridX + cx] === 0) {
           const idx00 = cz * cols + cx;
           const idx10 = cz * cols + (cx + 1);
           const idx01 = (cz + 1) * cols + cx;
@@ -6878,9 +7092,9 @@ export class TerrainGrid {
           const cellStartV = nextV;
 
           for (let iv = 0; iv <= 2; iv++) {
-            const wz = cz + iv * 0.5;
+            const wz = (cz + iv * 0.5) * this.cellSize;
             for (let iu = 0; iu <= 2; iu++) {
-              const wx = cx + iu * 0.5;
+              const wx = (cx + iu * 0.5) * this.cellSize;
               const wy = this.getSubCellVertexHeight(cx, cz, iu, iv);
 
               const pIdx = nextV * 3;

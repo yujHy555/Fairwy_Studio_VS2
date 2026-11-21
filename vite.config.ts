@@ -14,7 +14,7 @@ function defaultHoleApiPlugin(): Plugin {
           });
           req.on('end', () => {
             try {
-              const defaultHolePath = path.resolve(__dirname, 'public/default_hole.json');
+              const defaultHolePath = path.resolve(import.meta.dirname ?? process.cwd(), 'public/default_hole.json');
               fs.writeFileSync(defaultHolePath, body, 'utf8');
               res.statusCode = 200;
               res.setHeader('Content-Type', 'application/json');
@@ -34,7 +34,7 @@ function defaultHoleApiPlugin(): Plugin {
       server.middlewares.use('/api/reset-default-hole', (req, res) => {
         if (req.method === 'POST') {
           try {
-            const defaultHolePath = path.resolve(__dirname, 'public/default_hole.json');
+            const defaultHolePath = path.resolve(import.meta.dirname ?? process.cwd(), 'public/default_hole.json');
             if (fs.existsSync(defaultHolePath)) {
               fs.unlinkSync(defaultHolePath);
             }

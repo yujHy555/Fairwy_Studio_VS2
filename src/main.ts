@@ -16,6 +16,7 @@ import {
   Mesh,
   AbstractMesh,
   InstancedMesh,
+  LinesMesh,
   Node,
   VertexData,
   StandardMaterial,
@@ -58,11 +59,10 @@ import { DesignerBrushVisualizer } from './terrain/DesignerBrushVisualizer';
 import { FeatureTracer } from './terrain/FeatureTracer';
 import {
   LoadedMapNGSource,
-  extractHoleCrop,
-  extractSatelliteDataUrls,
-  detectGolfCourseFootprint,
-  buildMacroSurroundMesh,
-  updateMacroSurroundMix
+  UnifiedMapNGCourse,
+  extractUnifiedCourseGrid,
+  extractUnifiedSatelliteDataUrl,
+  detectGolfCourseFootprint
 } from './terrain/MapNGImporter';
 import { PolygonPoint } from './terrain/PolygonMath';
 import { KyalamiHoleGuide } from './data/KyalamiCourseData';
@@ -202,7 +202,10 @@ class FairwayStudioApp {
   } | null = null;
   private lastMapNGCourseCenter = { x: 110, z: 230 };
   private lastMapNGCourseSpan = 460;
+  private lastUnifiedCourseMeta: UnifiedMapNGCourse['meta'] | null = null;
   private lastSatelliteFileName = '';
+  private groundSelectionOutline: LinesMesh | null = null;
+  private objectSelectionOutline: LinesMesh | null = null;
   private playFreezeTimerId: number | null = null;
   private wasCameraDetachedForTrace = false;
   private lastSavedSatelliteOpacity = 0.72;
@@ -357,14 +360,31 @@ class FairwayStudioApp {
         this.runWithTerraformingLoader(() => {
           const snap = this.captureHistorySnapshot(`Trace ${surfaceType}`);
           const newIdx = this.terrain.addTracedFeature(surfaceType, contour);
-          this.courseManager.refreshWaterMeshes();
+          const createdFeat = this.terrain.stampedFeatures[newIdx];
+          if (surfaceType === SurfaceType.WATER) {
+            this.courseManager.refreshWaterMeshes();
+          } else if (surfaceType === SurfaceType.TEE && createdFeat) {
+            this.courseManager.ensureTeeMarkersForFeature(createdFeat);
+            if (this.courseManager.currentStrokes === 0) {
+              this.placeBallAtActiveTee();
+            }
+          } else if (surfaceType === SurfaceType.GREEN && createdFeat) {
+            this.courseManager.ensurePinForGreenFeature(createdFeat);
+            this.ball?.setTargetPin(this.courseManager.currentHole.pinPosition);
+          } else {
+            this.courseManager.refreshWaterMeshes();
+          }
           this.courseManager.refreshSceneryForFeatures();
           if (this.terrain.terrainMesh) {
             this.havok.updateTerrainCollision(this.terrain.terrainMesh);
           }
           this.greenVisualizer?.rebuildSlopeGrid();
-          this.refreshOutliner();
           this.selectCourseFeature(newIdx);
+          this.ui?.updateFeatureList(this.terrain.stampedFeatures, newIdx);
+          this.refreshOutliner();
+          this.registerSceneryShadows();
+          this.updateHUDDisplay();
+          this.updateDevStats();
           this.recordHistoryStep(snap.description, snap);
           const label = (SURFACE_PROPERTIES[surfaceType]?.name || String(surfaceType)).toUpperCase();
           this.ui?.showToast(`✨ Created traced ${label} contour!`, 'success', 2400);
@@ -402,11 +422,11 @@ class FairwayStudioApp {
     this.initGamepad();
     this.ui.showMainMenu();
 
-    // 10b. Setup Transform Gizmos and Subtle Outer Selection Halo (keeps textures & colors visible while editing)
+    // 10b. Setup Transform Gizmos and Thin Faint Blue Selection Halo (keeps textures & colors visible while editing)
     this.selectionHighlightLayer = new HighlightLayer('selectionHighlight', this.scene, {
       isStroke: true,
-      blurHorizontalSize: 1.0,
-      blurVerticalSize: 1.0
+      blurHorizontalSize: 0.45,
+      blurVerticalSize: 0.45
     });
     this.selectionHighlightLayer.innerGlow = false;
     this.selectionHighlightLayer.outerGlow = true;
@@ -526,12 +546,27 @@ class FairwayStudioApp {
     if (this.terrain?.terrainMesh && !this.terrain.terrainMesh.isDisposed()) {
       this.terrain.terrainMesh.receiveShadows = true;
     }
-    if (this.macroSurroundMesh && !this.macroSurroundMesh.isDisposed()) {
-      this.macroSurroundMesh.receiveShadows = true;
-    }
     this.registerSceneryShadows();
-    if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-      this.shadowGenerator.splitFrustum();
+    if (this.shadowGenerator) {
+      const clampedDarkness = Math.max(0.12, Math.min(0.45, this.currentEnvSettings.shadowDarkness ?? 0.22));
+      this.shadowGenerator.darkness = clampedDarkness;
+      if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+        this.shadowGenerator.penumbraDarkness = 0.85;
+        if (this.cameraCtrl?.camera) {
+          this.cameraCtrl.camera.getViewMatrix(true);
+          this.cameraCtrl.camera.getProjectionMatrix(true);
+        }
+        this.shadowGenerator.splitFrustum();
+      }
+    }
+    if (forceAllDirty) {
+      this.scene.resetCachedMaterial();
+      const tMesh = this.terrain?.terrainMesh;
+      if (tMesh && !tMesh.isDisposed()) {
+        for (const sub of tMesh.subMeshes) {
+          sub.resetDrawCache();
+        }
+      }
     }
     this.scene.markAllMaterialsAsDirty(
       forceAllDirty
@@ -539,6 +574,22 @@ class FairwayStudioApp {
         : (Material.LightDirtyFlag | Material.TextureDirtyFlag | Material.MiscDirtyFlag)
     );
     this.scene.blockMaterialDirtyMechanism = prevBlock;
+
+    if (shadowsShouldBeOn) {
+      requestAnimationFrame(() => {
+        if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+          if (this.cameraCtrl?.camera) {
+            this.cameraCtrl.camera.getViewMatrix(true);
+            this.cameraCtrl.camera.getProjectionMatrix(true);
+          }
+          this.shadowGenerator.splitFrustum();
+        }
+        const tMesh = this.terrain?.terrainMesh;
+        if (tMesh && !tMesh.isDisposed() && tMesh.material) {
+          tMesh.material.markAsDirty(Material.LightDirtyFlag);
+        }
+      });
+    }
   }
 
   private freezeStaticWorldMatrices(freeze: boolean = true) {
@@ -648,21 +699,22 @@ class FairwayStudioApp {
         if (CascadedShadowGenerator.IsSupported) {
           const csm = new CascadedShadowGenerator(profile.shadowMapSize, this.sunLight);
           csm.numCascades = profile.shadowCascades;
-          csm.lambda = 0.80;
-          csm.shadowMaxZ = 440;
+          csm.lambda = 0.58;
+          csm.shadowMaxZ = 480;
           csm.stabilizeCascades = true;
           csm.depthClamp = true;
           csm.autoCalcDepthBounds = false;
-          csm.cascadeBlendPercentage = 0.05;
+          csm.cascadeBlendPercentage = 0.22;
           csm.frustumEdgeFalloff = 0.10;
+          csm.usePercentageCloserFiltering = true;
           csm.filteringQuality =
             profile.shadowFilterQuality === 'medium'
               ? CascadedShadowGenerator.QUALITY_MEDIUM
               : CascadedShadowGenerator.QUALITY_LOW;
-          csm.penumbraDarkness = this.currentEnvSettings.shadowDarkness;
-          csm.darkness = this.currentEnvSettings.shadowDarkness;
-          csm.bias = 0.00038;
-          csm.normalBias = 0.0045;
+          csm.penumbraDarkness = 0.85;
+          csm.darkness = Math.max(0.12, Math.min(0.45, this.currentEnvSettings.shadowDarkness ?? 0.22));
+          csm.bias = 0.00045;
+          csm.normalBias = 0.006;
           csm.transparencyShadow = true;
           csm.splitFrustum();
           this.shadowGenerator = csm;
@@ -738,7 +790,7 @@ class FairwayStudioApp {
         this.scene.imageProcessingConfiguration.contrast = 1.18;
         this.scene.imageProcessingConfiguration.exposure = 1.0;
 
-        const skybox = this.scene.createDefaultSkybox(hdrTexture, true, 2200, 0.03);
+        const skybox = this.scene.createDefaultSkybox(hdrTexture, true, 12000, 0.03);
         if (skybox) {
           skybox.name = 'FairwaySkybox';
           skybox.isPickable = false;
@@ -818,6 +870,7 @@ class FairwayStudioApp {
         lower.includes('tracer') ||
         lower.includes('comet') ||
         lower.includes('gizmo') ||
+        lower.includes('outline') ||
         lower.startsWith('water_') ||
         lower.startsWith('cup_')
       ) {
@@ -847,12 +900,14 @@ class FairwayStudioApp {
     }
 
     if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-      // Lock a static caster envelope covering the full course & high ball flight arc (Y up to 80m):
+      // Lock a static caster envelope covering active course & high ball flight arc:
       // Prevents per-frame shadow depth-range resizing/shimmer while maximizing depth precision
+      const maxW = Math.max(260, (this.terrain?.width || 220) + 40);
+      const maxL = Math.max(500, (this.terrain?.length || 460) + 40);
       this.shadowGenerator.freezeShadowCastersBoundingInfo = true;
       this.shadowGenerator.shadowCastersBoundingInfo = new BoundingInfo(
-        new Vector3(-40, -15, -40),
-        new Vector3(260, 80, 500)
+        new Vector3(-40, -25, -40),
+        new Vector3(maxW, 140, maxL)
       );
       this.shadowGenerator.splitFrustum();
     }
@@ -923,17 +978,21 @@ class FairwayStudioApp {
         this.ui.hideMainMenu();
         this.ensureHdriPreloading();
         this.freezeStaticWorldMatrices(false);
+        this.updateGroundSelectionOutline(false);
+        this.updateObjectSelectionOutline(null);
         this.activeMode = 'play';
         if (this.courseManager.currentHoleIndex !== 0) {
           this.courseManager.selectHole(0);
         }
+        this.applyPlayModeCorridorCulling(true);
         this.ui.setMode('play');
         this.setViewportShadingMode('rendered', false);
-        this.refreshShadowsAndMaterials(true);
         this.placeBallAtActiveTee();
         this.cameraCtrl.setMode('aim');
         this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+        this.refreshShadowsAndMaterials(true);
         this.updateHUDDisplay();
+        this.updateDevStats();
         this.schedulePlayWorldFreeze();
       },
       onMainMenuDesigner: () => {
@@ -944,6 +1003,7 @@ class FairwayStudioApp {
           this.playFreezeTimerId = null;
         }
         this.freezeStaticWorldMatrices(false);
+        this.applyPlayModeCorridorCulling(false);
         this.activeMode = 'designer';
         this.cameraCtrl.setMode('designer');
         this.ui.setMode('designer');
@@ -971,11 +1031,12 @@ class FairwayStudioApp {
             this.playFreezeTimerId = null;
           }
           this.freezeStaticWorldMatrices(false);
+          this.applyPlayModeCorridorCulling(false);
           this.setViewportShadingMode(this.currentShadingMode, true);
+          this.cameraCtrl.setMode('designer');
           if (this.currentShadingMode === 'rendered') {
             this.refreshShadowsAndMaterials(true);
           }
-          this.cameraCtrl.setMode('designer');
           if (this.aimSystem) this.aimSystem.setVisible(false);
           this.activeDesignerTool = 'select';
           this.brushVisualizer.setVisible(false);
@@ -995,6 +1056,8 @@ class FairwayStudioApp {
           this.setViewportShadingMode('rendered', false);
           this.selectCourseFeature(-1);
           this.selectMesh(null);
+          this.updateGroundSelectionOutline(false);
+          this.updateObjectSelectionOutline(null);
           this.setGizmoMode('none');
           if (this.featureGizmoProxy) {
             this.featureGizmoProxy.setEnabled(false);
@@ -1014,11 +1077,12 @@ class FairwayStudioApp {
             this.courseManager.snapPinToGreen();
             this.courseManager.refreshSceneryForFeatures();
           }
+          this.applyPlayModeCorridorCulling(true);
           if (this.courseManager && this.courseManager.currentStrokes === 0) {
             this.placeBallAtActiveTee();
           }
           this.scenery.syncColliders();
-          if (this.terrain.terrainMesh) {
+          if (this.terrain.terrainMesh && this.terrain.width <= 400 && this.terrain.length <= 400) {
             this.havok.updateTerrainCollision(this.terrain.terrainMesh);
           }
           this.ball.setTreeColliders(this.scenery.treeColliders);
@@ -1031,6 +1095,7 @@ class FairwayStudioApp {
             this.aimSystem.update(this.ball.position, this.activeClub, this.swingEngine.windSpeedMps, this.swingEngine.windHeadingDeg);
           }
           this.refreshShadowsAndMaterials(true);
+          this.updateDevStats();
           this.schedulePlayWorldFreeze();
         }
       },
@@ -1135,6 +1200,9 @@ class FairwayStudioApp {
       },
       onCreateFlatHole: (opts) => {
         this.createFlatHole(opts);
+      },
+      onLoadDemoHole: () => {
+        this.loadDemoHole();
       },
       onSelectKyalamiHole: (hole) => {
         this.selectKyalamiHoleIn3D(hole);
@@ -1410,14 +1478,6 @@ class FairwayStudioApp {
           }
         }
         this.terrain.setGroundUvSettings(settings);
-        if (this.macroSurroundMesh) {
-          const gSettings = this.terrain.getGroundUvSettings();
-          updateMacroSurroundMix(
-            this.macroSurroundMesh,
-            this.terrain.satelliteEnabled ? this.terrain.satelliteOpacity : 0,
-            gSettings.baseColor
-          );
-        }
       },
       onResetGroundMaterial: () => {
         this.terrain.resetGroundMaterial();
@@ -1425,14 +1485,6 @@ class FairwayStudioApp {
           ...this.terrain.getGroundUvSettings(),
           satelliteMapName: this.lastSatelliteFileName || undefined
         });
-        if (this.macroSurroundMesh) {
-          const gSettings = this.terrain.getGroundUvSettings();
-          updateMacroSurroundMix(
-            this.macroSurroundMesh,
-            this.terrain.satelliteEnabled ? this.terrain.satelliteOpacity : 0,
-            gSettings.baseColor
-          );
-        }
         this.ui.showToast('Reset Main Ground to Grass007 PBR defaults 🌱', 'info', 1800);
       },
       onSculptModeSelect: (mode) => {
@@ -2471,51 +2523,61 @@ class FairwayStudioApp {
         if (createdMesh) {
           this.courseManager.addSceneryMesh(createdMesh);
           this.registerSceneryShadows();
-          if (createdMesh instanceof Mesh) {
+          if (createdMesh instanceof Mesh || createdMesh instanceof InstancedMesh) {
             this.selectMesh(createdMesh);
           }
+          this.refreshOutliner();
           this.updateDevStats();
         }
       } else {
+        this.terrain.stampFeature(
+          gx,
+          gz,
+          p.width,
+          p.length,
+          0,
+          p.surfaceType,
+          p.depthProfile ?? (p.surfaceType === SurfaceType.WATER ? -2.2 : 0),
+          p.lipHeight ?? 0,
+          undefined,
+          p.bunkerShapeIndex,
+          true,
+          p.id
+        );
+
+        const newIdx = this.terrain.stampedFeatures.length - 1;
+        const newFeat = this.terrain.stampedFeatures[newIdx];
+        if (newFeat && p.name && (!newFeat.name || newFeat.name.startsWith('Feature'))) {
+          const sameCount = this.terrain.stampedFeatures.filter(f => f.surfaceType === p.surfaceType).length;
+          newFeat.name = `${p.name} #${sameCount}`;
+        }
+
         if (p.surfaceType === SurfaceType.WATER) {
-          const rimElevation = this.terrain.getBaseElevation(gx, gz);
-          this.terrain.stampFeature(
-            gx,
-            gz,
-            p.width,
-            p.length,
-            0,
-            p.surfaceType,
-            p.depthProfile ?? -2.2,
-            p.lipHeight ?? 0
-          );
-          this.scenery.createWaterPlane(gx, rimElevation, gz, p.width, p.length, 0);
-        } else {
-          this.terrain.stampFeature(
-            gx,
-            gz,
-            p.width,
-            p.length,
-            0,
-            p.surfaceType,
-            p.depthProfile ?? 0,
-            p.lipHeight ?? 0,
-            undefined,
-            p.bunkerShapeIndex,
-            true,
-            p.id
-          );
+          this.courseManager?.refreshWaterMeshes();
+        } else if (p.surfaceType === SurfaceType.TEE && newFeat) {
+          this.courseManager?.ensureTeeMarkersForFeature(newFeat);
+          if (this.courseManager && this.courseManager.currentStrokes === 0) {
+            this.placeBallAtActiveTee();
+          }
+        } else if (p.surfaceType === SurfaceType.GREEN && newFeat) {
+          this.courseManager?.ensurePinForGreenFeature(newFeat);
+          this.ball?.setTargetPin(this.courseManager.currentHole.pinPosition);
+          this.greenVisualizer.rebuildSlopeGrid();
         }
 
         this.havok.updateTerrainCollision(this.terrain.terrainMesh!);
-        if (p.surfaceType === SurfaceType.GREEN) {
-          this.greenVisualizer.rebuildSlopeGrid();
-        }
         if (this.courseManager) {
           this.courseManager.refreshSceneryForFeatures();
         }
         this.update1mGridMesh();
         this.registerSceneryShadows();
+        if (newIdx >= 0) {
+          this.selectCourseFeature(newIdx);
+          this.ui.updateFeatureList(this.terrain.stampedFeatures, newIdx);
+        }
+        this.refreshOutliner();
+        this.updateHUDDisplay();
+        this.updateDevStats();
       }
       this.recordHistoryStep('Stamp ' + (p.name || 'Object'), snap);
 
@@ -2828,10 +2890,83 @@ class FairwayStudioApp {
     this.ui.setGizmoModeButton(mode);
   }
 
+  private updateGroundSelectionOutline(visible: boolean) {
+    if (this.groundSelectionOutline) {
+      this.groundSelectionOutline.dispose();
+      this.groundSelectionOutline = null;
+    }
+    if (!visible || this.activeMode !== 'designer' || !this.terrain) return;
+    const w = this.terrain.width;
+    const l = this.terrain.length;
+    const step = Math.max(8, Math.round(Math.max(w, l) / 48));
+    const pts: Vector3[] = [];
+    for (let x = 0; x <= w; x += step) {
+      pts.push(new Vector3(x, this.terrain.getElevation(x, 0) + 0.16, 0));
+    }
+    if (pts[pts.length - 1].x < w) pts.push(new Vector3(w, this.terrain.getElevation(w, 0) + 0.16, 0));
+    for (let z = step; z <= l; z += step) {
+      pts.push(new Vector3(w, this.terrain.getElevation(w, z) + 0.16, z));
+    }
+    if (pts[pts.length - 1].z < l) pts.push(new Vector3(w, this.terrain.getElevation(w, l) + 0.16, l));
+    for (let x = w - step; x >= 0; x -= step) {
+      pts.push(new Vector3(x, this.terrain.getElevation(x, l) + 0.16, l));
+    }
+    if (pts[pts.length - 1].x > 0) pts.push(new Vector3(0, this.terrain.getElevation(0, l) + 0.16, l));
+    for (let z = l - step; z >= 0; z -= step) {
+      pts.push(new Vector3(0, this.terrain.getElevation(0, z) + 0.16, z));
+    }
+    pts.push(pts[0].clone());
+    const lines = MeshBuilder.CreateLines('groundSelectionOutline', { points: pts }, this.scene);
+    lines.color = new Color3(0.32, 0.72, 1.0);
+    lines.alpha = 0.58;
+    lines.isPickable = false;
+    this.groundSelectionOutline = lines;
+  }
+
+  private updateObjectSelectionOutline(mesh: (Mesh | InstancedMesh) | null) {
+    if (this.objectSelectionOutline) {
+      this.objectSelectionOutline.dispose();
+      this.objectSelectionOutline = null;
+    }
+    if (!mesh || mesh.isDisposed() || mesh === this.featureGizmoProxy || this.activeMode !== 'designer') return;
+    mesh.computeWorldMatrix(true);
+    let min: Vector3;
+    let max: Vector3;
+    if (mesh.getChildMeshes && mesh.getChildMeshes().length > 0 && typeof mesh.getHierarchyBoundingVectors === 'function') {
+      const b = mesh.getHierarchyBoundingVectors(true);
+      min = b.min.clone();
+      max = b.max.clone();
+    } else {
+      mesh.refreshBoundingInfo({});
+      const bb = mesh.getBoundingInfo().boundingBox;
+      min = bb.minimumWorld.clone();
+      max = bb.maximumWorld.clone();
+    }
+    if (!Number.isFinite(min.x) || !Number.isFinite(max.x) || min.equals(max)) return;
+    const pad = 0.08;
+    const x0 = min.x - pad, y0 = min.y - pad, z0 = min.z - pad;
+    const x1 = max.x + pad, y1 = max.y + pad, z1 = max.z + pad;
+    const segs: Vector3[][] = [
+      [new Vector3(x0, y0, z0), new Vector3(x1, y0, z0), new Vector3(x1, y0, z1), new Vector3(x0, y0, z1), new Vector3(x0, y0, z0)],
+      [new Vector3(x0, y1, z0), new Vector3(x1, y1, z0), new Vector3(x1, y1, z1), new Vector3(x0, y1, z1), new Vector3(x0, y1, z0)],
+      [new Vector3(x0, y0, z0), new Vector3(x0, y1, z0)],
+      [new Vector3(x1, y0, z0), new Vector3(x1, y1, z0)],
+      [new Vector3(x1, y0, z1), new Vector3(x1, y1, z1)],
+      [new Vector3(x0, y0, z1), new Vector3(x0, y1, z1)]
+    ];
+    const boxLines = MeshBuilder.CreateLineSystem('objectSelectionOutline', { lines: segs }, this.scene);
+    boxLines.color = new Color3(0.35, 0.76, 1.0);
+    boxLines.alpha = 0.62;
+    boxLines.isPickable = false;
+    this.objectSelectionOutline = boxLines;
+  }
+
   private selectGroundLayer() {
     this.selectCourseFeature(-1);
     this.selectMesh(null);
+    this.updateGroundSelectionOutline(true);
     this.ui.showGroundPbrInspector(this.terrain.getGroundUvSettings(), true);
+    this.updateDevStats();
     this.ui.showToast('Selected Main Ground — edit material & textures in Developer Zone 🌱', 'info', 1800);
   }
 
@@ -2904,6 +3039,7 @@ class FairwayStudioApp {
     );
 
     if (mesh && mesh !== this.featureGizmoProxy) {
+      this.updateGroundSelectionOutline(false);
       this.terrain.setActiveFeatureSelection(-1, 'surface');
       const matInfo = this.getObjectMaterialInfo(mesh, this.selectedObjectSubMatIdx);
       this.ui.updateDevSelectedObjectMaterial(matInfo);
@@ -2914,9 +3050,12 @@ class FairwayStudioApp {
       this.ui.updateDevSelectedFeatureMaterial(null, null);
     }
 
-    // Electric Blue Selection Glow Layer
+    this.updateObjectSelectionOutline(mesh && mesh !== this.featureGizmoProxy ? mesh : null);
+
+    // Faint Thin Sky-Blue Selection Outline & Glow Layer
     if (this.selectionHighlightLayer) {
       this.selectionHighlightLayer.removeAllMeshes();
+      const faintBlue = new Color3(0.28, 0.72, 1.0);
       if (mesh && mesh !== this.featureGizmoProxy) {
         if (this.featureDrapeMesh) {
           this.featureDrapeMesh.dispose();
@@ -2932,14 +3071,17 @@ class FairwayStudioApp {
         }
         this.selectedFeatureIndex = -1;
         this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
+        if (mesh instanceof Mesh) {
+          this.addMeshTreeToHighlight(mesh, faintBlue);
+        }
       }
       if (mesh && mesh === this.featureGizmoProxy) {
-        const glowColor = new Color3(0.18, 0.65, 1.0);
         try {
-          this.selectionHighlightLayer.addMesh(mesh, glowColor);
+          this.selectionHighlightLayer.addMesh(mesh, faintBlue);
         } catch (e) {}
       }
     }
+    this.updateDevStats();
   }
 
   public frameSelectedObject() {
@@ -2981,9 +3123,12 @@ class FairwayStudioApp {
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
       this.ui.updateDevSelectedFeatureMaterial(null, null);
       this.terrain.setGroundUvSettings(this.terrain.getGroundUvSettings());
+      this.updateDevStats();
       return;
     }
 
+    this.updateGroundSelectionOutline(false);
+    this.updateObjectSelectionOutline(null);
     this.selectedFeatureIndex = index;
     const feat = this.terrain.stampedFeatures[index];
 
@@ -3183,14 +3328,14 @@ class FairwayStudioApp {
       const nx = dx / dist;
       const nz = dz / dist;
 
-      // Crisp draped perimeter outline (+0.30m outward, -0.30m inward)
-      const ox = p.x + nx * 0.30;
-      const oz = p.z + nz * 0.30;
+      // Thin, crisp draped perimeter outline (+0.11m outward, -0.11m inward)
+      const ox = p.x + nx * 0.11;
+      const oz = p.z + nz * 0.11;
       const oy = this.terrain.getElevation(ox, oz) + 0.08;
       pathOuter.push(new Vector3(ox, oy, oz));
 
-      const ix = p.x - nx * 0.30;
-      const iz = p.z - nz * 0.30;
+      const ix = p.x - nx * 0.11;
+      const iz = p.z - nz * 0.11;
       const iy = this.terrain.getElevation(ix, iz) + 0.08;
       pathInner.push(new Vector3(ix, iy, iz));
     }
@@ -3229,9 +3374,9 @@ class FairwayStudioApp {
 
     if (!this.featureDrapeMaterial) {
       const mat = new StandardMaterial('featureDrapeMat', this.scene);
-      mat.diffuseColor = new Color3(0.0, 0.90, 1.0);
-      mat.emissiveColor = new Color3(0.0, 0.75, 1.0);
-      mat.alpha = 0.90;
+      mat.diffuseColor = new Color3(0.32, 0.72, 1.0);
+      mat.emissiveColor = new Color3(0.22, 0.60, 0.96);
+      mat.alpha = 0.62;
       mat.backFaceCulling = false;
       this.featureDrapeMaterial = mat;
     }
@@ -3241,7 +3386,7 @@ class FairwayStudioApp {
   private highlightFeatureComponents(index: number) {
     if (!this.selectionHighlightLayer || index < 0 || index >= this.terrain.stampedFeatures.length) return;
     const feat = this.terrain.stampedFeatures[index];
-    const glowColor = new Color3(0.05, 0.80, 1.0);
+    const glowColor = new Color3(0.30, 0.74, 1.0);
 
     // 1. Highlight draped contour outline ribbon
     if (this.featureDrapeMesh) {
@@ -3514,6 +3659,69 @@ class FairwayStudioApp {
     }, 500);
   }
 
+  private computeMeshGeoStats(mesh: Mesh | InstancedMesh | null): { tris: number; verts: number } {
+    if (!mesh || mesh.isDisposed()) return { tris: 0, verts: 0 };
+    if (mesh instanceof InstancedMesh) {
+      const src = mesh.sourceMesh;
+      if (!src || src.isDisposed()) return { tris: 0, verts: 0 };
+      return {
+        tris: Math.round((src.getTotalIndices() || 0) / 3),
+        verts: src.getTotalVertices() || 0
+      };
+    }
+    let tris = Math.round((mesh.getTotalIndices() || 0) / 3);
+    let verts = mesh.getTotalVertices() || 0;
+    const children = mesh.getChildMeshes ? mesh.getChildMeshes() : [];
+    for (const c of children) {
+      if (c.isDisposed()) continue;
+      if (c instanceof InstancedMesh && c.sourceMesh && !c.sourceMesh.isDisposed()) {
+        tris += Math.round((c.sourceMesh.getTotalIndices() || 0) / 3);
+        verts += c.sourceMesh.getTotalVertices() || 0;
+      } else if (c instanceof Mesh) {
+        tris += Math.round((c.getTotalIndices() || 0) / 3);
+        verts += c.getTotalVertices() || 0;
+      }
+    }
+    return { tris, verts };
+  }
+
+  private computeSceneGeoStats(): { sceneTris: number; sceneVerts: number } {
+    let sceneTris = 0;
+    let sceneVerts = 0;
+    for (const m of this.scene.meshes) {
+      if (!m || m.isDisposed() || !m.isVisible || !m.isEnabled(false)) continue;
+      const lower = (m.name || '').toLowerCase();
+      if (
+        lower.startsWith('master_') ||
+        lower.includes('skybox') ||
+        lower.includes('gizmo') ||
+        lower.includes('outline') ||
+        lower.includes('drape') ||
+        lower.includes('proxy') ||
+        lower.includes('gridoverlay') ||
+        lower.includes('brush') ||
+        lower.includes('aim') ||
+        lower.includes('toptracer') ||
+        lower.includes('tracer') ||
+        lower.includes('comet') ||
+        lower.includes('bead')
+      ) {
+        continue;
+      }
+      if (m instanceof InstancedMesh) {
+        const src = m.sourceMesh;
+        if (src && !src.isDisposed()) {
+          sceneTris += Math.round((src.getTotalIndices() || 0) / 3);
+          sceneVerts += src.getTotalVertices() || 0;
+        }
+      } else {
+        sceneTris += Math.round((m.getTotalIndices() || 0) / 3);
+        sceneVerts += m.getTotalVertices() || 0;
+      }
+    }
+    return { sceneTris, sceneVerts };
+  }
+
   private updateDevStats() {
     const scenery = this.courseManager.getSceneryMeshes();
     let trees = 0;
@@ -3525,8 +3733,37 @@ class FairwayStudioApp {
       else if (n.includes('rock')) rocks++;
       else if (n.includes('cliff')) cliffs++;
     }
-    const bunkers = this.terrain.stampedFeatures.filter(f => f.surfaceType === SurfaceType.BUNKER).length || 5;
-    this.ui.updateDevStats(trees, rocks, cliffs, bunkers);
+    const bunkers = this.terrain.stampedFeatures.filter(f => f.surfaceType === SurfaceType.BUNKER).length;
+    const { sceneTris, sceneVerts } = this.computeSceneGeoStats();
+    let selectedLabel: string | undefined;
+    let selectedTris: number | undefined;
+    let selectedVerts: number | undefined;
+
+    if (this.selectedMesh && this.selectedMesh !== this.featureGizmoProxy) {
+      selectedLabel = this.selectedMesh.name || 'Object';
+      const st = this.computeMeshGeoStats(this.selectedMesh);
+      selectedTris = st.tris;
+      selectedVerts = st.verts;
+    } else if (this.selectedFeatureIndex >= 0 && this.terrain.stampedFeatures[this.selectedFeatureIndex]) {
+      const feat = this.terrain.stampedFeatures[this.selectedFeatureIndex];
+      selectedLabel = feat.name || String(feat.surfaceType);
+      const tSt = this.computeMeshGeoStats(this.terrain.terrainMesh);
+      selectedTris = tSt.tris;
+      selectedVerts = tSt.verts;
+    } else if (this.terrain?.terrainMesh) {
+      selectedLabel = 'GolfTerrain';
+      const tSt = this.computeMeshGeoStats(this.terrain.terrainMesh);
+      selectedTris = tSt.tris;
+      selectedVerts = tSt.verts;
+    }
+
+    this.ui.updateDevStats(trees, rocks, cliffs, bunkers, {
+      sceneTris,
+      sceneVerts,
+      selectedLabel,
+      selectedTris,
+      selectedVerts
+    });
     this.ui.updateDevObjectList(
       this.getSelectable3DModels().map(m => ({ id: m.id, label: m.label })),
       this.selectedMesh && this.selectedMesh !== this.featureGizmoProxy ? this.selectedMesh.name : null
@@ -4308,7 +4545,7 @@ class FairwayStudioApp {
 
     if (this.cameraCtrl.mode === 'flight') {
       const groundY = this.terrain.getElevation(this.ball.position.x, this.ball.position.z);
-      this.cameraCtrl.updateFlightCamera(this.ball.position, this.ball.curVelocity, groundY, this.ball.hasLanded);
+      this.cameraCtrl.updateFlightCamera(this.ball.position, this.ball.curVelocity, groundY, this.ball.hasLanded, dt);
     }
 
     if (this.aimSystem && this.activeMode === 'play' && this.ball.state === BallState.AT_REST) {
@@ -4477,7 +4714,11 @@ class FairwayStudioApp {
     }
 
     if (this.sunLight) {
-      const courseCenter = new Vector3(110, 4, 210);
+      const courseCenter = new Vector3(
+        this.terrain ? this.terrain.width * 0.5 : 110,
+        4,
+        this.terrain ? this.terrain.length * 0.5 : 210
+      );
       const radAz = (this.currentEnvSettings.sunAzimuth * Math.PI) / 180;
       const radEl = (this.currentEnvSettings.sunElevation * Math.PI) / 180;
       const dirX = Math.sin(radAz) * Math.cos(radEl);
@@ -4491,9 +4732,9 @@ class FairwayStudioApp {
     }
 
     if (this.shadowGenerator) {
-      this.shadowGenerator.darkness = this.currentEnvSettings.shadowDarkness;
+      this.shadowGenerator.darkness = Math.max(0.12, Math.min(0.45, this.currentEnvSettings.shadowDarkness ?? 0.22));
       if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-        this.shadowGenerator.penumbraDarkness = this.currentEnvSettings.shadowDarkness;
+        this.shadowGenerator.penumbraDarkness = 0.85;
       }
       if (this.skyboxMesh) {
         this.shadowGenerator.removeShadowCaster(this.skyboxMesh, true);
@@ -4536,7 +4777,7 @@ class FairwayStudioApp {
             this.skyboxMesh = null;
             this.hdriUvPlugin = null;
           }
-          const skybox = this.scene.createDefaultSkybox(hdrTex, true, 2200, 0.03);
+          const skybox = this.scene.createDefaultSkybox(hdrTex, true, 12000, 0.03);
           if (skybox) {
             skybox.name = 'FairwaySkybox';
             skybox.isPickable = false;
@@ -4776,15 +5017,152 @@ class FairwayStudioApp {
     const ok = this.terrain.removeFeature(idx);
     if (ok) {
       this.courseManager.refreshWaterMeshes();
+      if (feat.surfaceType === SurfaceType.TEE || feat.surfaceType === SurfaceType.GREEN) {
+        this.courseManager.setupHoleVisuals();
+      }
       this.selectCourseFeature(-1);
       this.ui.showToast(`🗑️ Deleted ${featName}`, 'info', 2000);
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
       this.refreshOutliner();
+      if (this.terrain.terrainMesh && (this.terrain.width <= 400 && this.terrain.length <= 400)) {
+        this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+      }
+      this.updateHUDDisplay();
+      this.updateDevStats();
+    }
+  }
+
+  private applyPlayModeCorridorCulling(enable: boolean) {
+    const isLargeCourse = this.terrain.width > 400 || this.terrain.length > 400;
+    if (!isLargeCourse) {
+      if (this.terrain.playCorridorBounds) {
+        this.terrain.setPlayCorridorBounds(null);
+        if (this.terrain.terrainMesh) {
+          this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+        }
+      }
+      return;
+    }
+
+    if (!enable) {
+      if (this.terrain.playCorridorBounds) {
+        this.terrain.setPlayCorridorBounds(null);
+      }
+      return;
+    }
+
+    const hole = this.courseManager.currentHole;
+    const tee = hole?.teePosition || { x: this.terrain.width * 0.5, z: Math.max(20, this.terrain.length * 0.25) };
+    const pin = hole?.pinPosition || { x: this.terrain.width * 0.5, z: Math.min(this.terrain.length - 20, this.terrain.length * 0.75) };
+
+    let minX = Math.min(tee.x, pin.x);
+    let maxX = Math.max(tee.x, pin.x);
+    let minZ = Math.min(tee.z, pin.z);
+    let maxZ = Math.max(tee.z, pin.z);
+
+    if (hole?.waypoints) {
+      for (const wp of hole.waypoints) {
+        if (wp.x < minX) minX = wp.x;
+        if (wp.x > maxX) maxX = wp.x;
+        if (wp.z < minZ) minZ = wp.z;
+        if (wp.z > maxZ) maxZ = wp.z;
+      }
+    }
+
+    const margin = 95;
+    minX = Math.max(0, minX - margin);
+    maxX = Math.min(this.terrain.width, maxX + margin);
+    minZ = Math.max(0, minZ - margin);
+    maxZ = Math.min(this.terrain.length, maxZ + margin);
+
+    for (const f of this.terrain.stampedFeatures) {
+      const fx0 = f.centerX - f.width * 0.5 - 24;
+      const fx1 = f.centerX + f.width * 0.5 + 24;
+      const fz0 = f.centerZ - f.length * 0.5 - 24;
+      const fz1 = f.centerZ + f.length * 0.5 + 24;
+      if (fx1 >= minX && fx0 <= maxX && fz1 >= minZ && fz0 <= maxZ) {
+        minX = Math.max(0, Math.min(minX, fx0));
+        maxX = Math.min(this.terrain.width, Math.max(maxX, fx1));
+        minZ = Math.max(0, Math.min(minZ, fz0));
+        maxZ = Math.min(this.terrain.length, Math.max(maxZ, fz1));
+      }
+    }
+
+    this.terrain.setPlayCorridorBounds({ minX, maxX, minZ, maxZ });
+    if (this.terrain.terrainMesh) {
+      this.havok.updateTerrainCollision(this.terrain.terrainMesh);
+    }
+  }
+
+  public async loadDemoHole() {
+    let preloaded: string | null = null;
+    try {
+      const resp = await fetch(`/default_hole.json?t=${Date.now()}`);
+      if (resp.ok) preloaded = await resp.text();
+    } catch {}
+
+    this.runWithTerraformingLoader(() => {
+      if (this.macroSurroundMesh) {
+        this.macroSurroundMesh.dispose();
+        this.macroSurroundMesh = null;
+      }
+      this.lastMapNGSource = null;
+      this.lastMapNGCropOpts = null;
+      this.lastUnifiedCourseMeta = null;
+      this.lastMapNGCourseCenter = { x: 110, z: 230 };
+      this.lastMapNGCourseSpan = 460;
+      this.cameraCtrl.setDesignerWorldBounds(-80, 300, -80, 540, 600);
+      if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+        this.shadowGenerator.shadowMaxZ = 480;
+      }
+
+      const imported = preloaded ? this.courseManager.importCourseJSON(preloaded) : false;
+      if (!imported) {
+        this.terrain.createFlatTerrain(2.0, true, true, 220, 460, 1);
+        this.terrain.generateInitialNaturalTerrain();
+        this.courseManager.restoreChampionshipGreenAndCourse();
+      }
+      if (this.courseManager.currentHole) {
+        this.courseManager.currentHole.isDemo = true;
+      }
+      this.courseManager.setupHoleVisuals(true);
+      this.courseManager.refreshWaterMeshes();
+      this.scenery.syncColliders();
+      this.ball?.setTreeColliders(this.scenery.treeColliders);
       if (this.terrain.terrainMesh) {
         this.havok.updateTerrainCollision(this.terrain.terrainMesh);
       }
+      this.greenVisualizer?.rebuildSlopeGrid();
+      this.selectCourseFeature(-1);
+      this.selectMesh(null);
+      this.updateGroundSelectionOutline(false);
+      this.updateObjectSelectionOutline(null);
+      this.placeBallAtActiveTee();
+      this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
+      this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
+      this.refreshOutliner();
+      this.ui.updateSatelliteUi(
+        Boolean(this.terrain.satelliteOverlayTex && this.terrain.satelliteEnabled),
+        this.terrain.satelliteOpacity
+      );
+      this.ui.showGroundPbrInspector({
+        ...this.terrain.getGroundUvSettings(),
+        satelliteMapName: this.terrain.satelliteOverlayTex ? (this.lastSatelliteFileName || 'satellite.jpg') : undefined
+      });
+      this.updateHUDDisplay();
       this.updateDevStats();
-    }
+
+      if (this.activeMode === 'designer') {
+        this.cameraCtrl.setMode('designer');
+        this.cameraCtrl.frameOnTarget(new Vector3(110, 4, 220), 230);
+        this.setViewportShadingMode(this.currentShadingMode, true);
+      } else {
+        this.cameraCtrl.setMode('aim');
+        this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+      }
+      this.refreshShadowsAndMaterials(true);
+      this.ui.showToast('⛳ Loaded Demo Hole — ready to edit & play!', 'success', 2600);
+    }, 'Loading Demo Hole...');
   }
 
   public toggleSatelliteOverlay() {
@@ -4792,17 +5170,14 @@ class FairwayStudioApp {
       this.ui.showToast('Import a MapNG course or upload a Satellite Ortho texture first to toggle [T].', 'info', 2400);
       return;
     }
-    const gColor = this.terrain.getGroundUvSettings().baseColor;
     if (this.terrain.satelliteEnabled && this.terrain.satelliteOpacity > 0.01) {
       this.lastSavedSatelliteOpacity = this.terrain.satelliteOpacity;
       this.terrain.setSatelliteOpacity(0.0, false);
-      updateMacroSurroundMix(this.macroSurroundMesh, 0.0, gColor);
       this.ui.updateSatelliteUi(false, 0.0);
       this.ui.showToast('🛰️ Satellite Overlay OFF [T]', 'info', 1400);
     } else {
       const nextOp = this.lastSavedSatelliteOpacity > 0.05 ? this.lastSavedSatelliteOpacity : 0.72;
       this.terrain.setSatelliteOpacity(nextOp, true);
-      updateMacroSurroundMix(this.macroSurroundMesh, nextOp, gColor);
       this.ui.updateSatelliteUi(true, nextOp);
       this.ui.showToast(`🛰️ Satellite Overlay ON (${Math.round(nextOp * 100)}%) [T]`, 'info', 1400);
     }
@@ -4815,38 +5190,33 @@ class FairwayStudioApp {
     const hasTex = Boolean(this.terrain.satelliteOverlayTex);
     const enabled = hasTex && opacity > 0.005;
     this.terrain.setSatelliteOpacity(opacity, enabled);
-    const gColor = this.terrain.getGroundUvSettings().baseColor;
-    updateMacroSurroundMix(this.macroSurroundMesh, enabled ? opacity : 0.0, gColor);
     this.ui.updateSatelliteUi(enabled, opacity);
   }
 
   public applySatelliteImageOnly(img: HTMLImageElement, fileName: string) {
     this.lastSatelliteFileName = fileName;
     let holeDataUrl: string | null = null;
-    let macroDataUrl: string | null | undefined = undefined;
 
-    if (this.lastMapNGSource && this.lastMapNGCropOpts) {
+    if (this.lastMapNGSource && this.lastUnifiedCourseMeta) {
       this.lastMapNGSource.satelliteImg = img;
       const footprint =
         this.lastMapNGSource.courseFootprint || detectGolfCourseFootprint(this.lastMapNGSource);
       this.lastMapNGSource.courseFootprint = footprint;
-      const extracted = extractSatelliteDataUrls(
+      holeDataUrl = extractUnifiedSatelliteDataUrl(
         img,
         this.lastMapNGSource.heightmap.width,
         this.lastMapNGSource.heightmap.height,
         this.lastMapNGSource.meta.metersPerPixel || 1.0,
-        {
-          ...this.lastMapNGCropOpts,
-          gridWidth: this.terrain.width,
-          gridLength: this.terrain.length,
-          courseFootprint: footprint
-        }
+        this.lastUnifiedCourseMeta.cropWestM,
+        this.lastUnifiedCourseMeta.cropNorthM,
+        this.lastUnifiedCourseMeta.worldWidth,
+        this.lastUnifiedCourseMeta.worldLength,
+        this.lastMapNGCropOpts?.isolateCourseOnly ?? true,
+        footprint
       );
-      holeDataUrl = extracted.satelliteDataUrl;
-      macroDataUrl = extracted.macroSatelliteDataUrl;
     } else {
-      const maxDim = Math.min(1024, Math.max(img.width, img.height, 256));
-      const scale = maxDim / Math.max(1, img.width, img.height);
+      const maxTexDim = Math.min(2048, Math.max(img.width, img.height, 256));
+      const scale = maxTexDim / Math.max(1, img.width, img.height);
       const cw = Math.max(128, Math.round(img.width * scale));
       const ch = Math.max(128, Math.round(img.height * scale));
       const c = document.createElement('canvas');
@@ -4855,7 +5225,7 @@ class FairwayStudioApp {
       const ctx = c.getContext('2d');
       if (ctx) {
         ctx.drawImage(img, 0, 0, cw, ch);
-        holeDataUrl = c.toDataURL('image/jpeg', 0.88);
+        holeDataUrl = c.toDataURL('image/jpeg', 0.90);
       }
     }
 
@@ -4867,8 +5237,6 @@ class FairwayStudioApp {
     const mix = Math.max(0.72, this.lastSavedSatelliteOpacity || 0.72);
     this.lastSavedSatelliteOpacity = mix;
     this.terrain.setSatelliteOverlayTexture(holeDataUrl, mix);
-    const gSettings = this.terrain.getGroundUvSettings();
-    updateMacroSurroundMix(this.macroSurroundMesh, mix, gSettings.baseColor, macroDataUrl);
     this.ui.updateSatelliteUi(true, mix);
     this.ui.showGroundPbrInspector({
       ...this.terrain.getGroundUvSettings(),
@@ -4891,11 +5259,12 @@ class FairwayStudioApp {
       }
       this.lastMapNGSource = null;
       this.lastMapNGCropOpts = null;
+      this.lastUnifiedCourseMeta = null;
       this.lastMapNGCourseCenter = { x: 110, z: 230 };
       this.lastMapNGCourseSpan = 460;
-      this.cameraCtrl.setDesignerWorldBounds(-80, 300, -80, 540, 520);
+      this.cameraCtrl.setDesignerWorldBounds(-80, 300, -80, 540, 600);
       if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-        this.shadowGenerator.shadowMaxZ = 440;
+        this.shadowGenerator.shadowMaxZ = 480;
       }
 
       const hole = this.courseManager.createFlatHoleTemplate(opts);
@@ -4906,7 +5275,11 @@ class FairwayStudioApp {
       }
       this.greenVisualizer?.rebuildSlopeGrid();
       this.selectCourseFeature(-1);
-      this.placeBallAtActiveTee();
+      this.updateGroundSelectionOutline(false);
+      this.updateObjectSelectionOutline(null);
+      if (!opts.blankFlat) {
+        this.placeBallAtActiveTee();
+      }
       this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
       this.refreshOutliner();
@@ -4917,13 +5290,12 @@ class FairwayStudioApp {
         ...this.terrain.getGroundUvSettings(),
         satelliteMapName: undefined
       });
-      this.refreshShadowsAndMaterials(true);
-
       if (this.activeMode === 'designer') {
         this.cameraCtrl.frameOnTarget(new Vector3(110, 2, 230), 210);
       } else {
         this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
       }
+      this.refreshShadowsAndMaterials(true);
 
       this.ui.showToast(
         `✨ Created Flat Hole ${hole.number} (Par ${hole.par}) — Ready to sculpt & build!`,
@@ -4936,7 +5308,35 @@ class FairwayStudioApp {
   public selectKyalamiHoleIn3D(holeGuide: KyalamiHoleGuide) {
     this.courseManager.applyKyalamiHoleMetadata(holeGuide.number, true);
 
-    if (this.activeMode === 'designer' && this.lastMapNGSource) {
+    if (this.lastUnifiedCourseMeta) {
+      const m = this.lastUnifiedCourseMeta;
+      const cx = Math.max(15, Math.min(this.terrain.width - 15, holeGuide.mapngCropHint.cropCenterX - m.cropWestM));
+      const cz = Math.max(15, Math.min(this.terrain.length - 15, m.cropSouthMaxM - holeGuide.mapngCropHint.cropCenterZ));
+      const rotRad = (holeGuide.mapngCropHint.rotationDeg * Math.PI) / 180;
+      const halfSpan = Math.max(50, holeGuide.distances.yellow * 0.48);
+      const dirE = Math.sin(rotRad);
+      const dirN = Math.cos(rotRad);
+      const teeX = Math.max(10, Math.min(this.terrain.width - 10, cx - dirE * halfSpan));
+      const teeZ = Math.max(10, Math.min(this.terrain.length - 10, cz - dirN * halfSpan));
+      const pinX = Math.max(10, Math.min(this.terrain.width - 10, cx + dirE * halfSpan));
+      const pinZ = Math.max(10, Math.min(this.terrain.length - 10, cz + dirN * halfSpan));
+
+      const hole = this.courseManager.currentHole;
+      if (hole) {
+        hole.teePosition = { x: teeX, y: this.terrain.getElevation(teeX, teeZ), z: teeZ };
+        hole.pinPosition = { x: pinX, y: this.terrain.getElevation(pinX, pinZ), z: pinZ };
+        hole.waypoints = [];
+      }
+      if (this.activeMode === 'play') {
+        this.applyPlayModeCorridorCulling(true);
+        this.placeBallAtActiveTee();
+      } else {
+        this.cameraCtrl.frameOnTarget(
+          new Vector3(cx, this.terrain.getElevation(cx, cz), cz),
+          Math.max(180, holeGuide.distances.yellow * 0.85)
+        );
+      }
+    } else if (this.activeMode === 'designer' && this.lastMapNGSource) {
       this.applyMapNGImport({
         source: this.lastMapNGSource,
         cropCenterX: holeGuide.mapngCropHint.cropCenterX,
@@ -4954,6 +5354,7 @@ class FairwayStudioApp {
     this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
     this.ui.overheadLayout?.setViewMode('graphic');
     this.updateHUDDisplay();
+    this.updateDevStats();
     this.ui.showToast(
       `⛳ Synced Kyalami Hole ${holeGuide.number} (Par ${holeGuide.par} • ${holeGuide.distances.yellow}m)`,
       'success',
@@ -4982,18 +5383,17 @@ class FairwayStudioApp {
         payload.source.courseFootprint = footprint;
       }
 
-      const cropOpts = {
-        cropCenterX: payload.cropCenterX,
-        cropCenterZ: payload.cropCenterZ,
-        rotationDeg: payload.rotationDeg,
+      if (this.macroSurroundMesh) {
+        this.macroSurroundMesh.dispose();
+        this.macroSurroundMesh = null;
+      }
+
+      const unified = extractUnifiedCourseGrid(payload.source, {
         elevationScale: payload.elevationScale,
-        gridWidth: this.terrain.width,
-        gridLength: this.terrain.length,
         isolateCourseOnly,
         courseFootprint: footprint
-      };
-      const extracted = extractHoleCrop(payload.source, cropOpts);
-      const satOpacity = extracted.satelliteDataUrl ? 0.85 : 0.0;
+      });
+      const satOpacity = unified.satelliteDataUrl ? 0.85 : 0.0;
       if (satOpacity > 0) this.lastSavedSatelliteOpacity = satOpacity;
 
       if (payload.clearScenery !== false) {
@@ -5005,32 +5405,8 @@ class FairwayStudioApp {
         this.courseManager.courseData.courseGuideId = 'kyalami';
       }
 
-      this.terrain.loadMapNGHeightfield(
-        extracted.baseHeights,
-        extracted.satelliteDataUrl,
-        satOpacity,
-        payload.clearFeatures,
-        extracted.holeCourseMask
-      );
-
-      if (this.macroSurroundMesh) {
-        this.macroSurroundMesh.dispose();
-        this.macroSurroundMesh = null;
-      }
-      this.macroSurroundMesh = buildMacroSurroundMesh(
-        this.scene,
-        payload.source,
-        cropOpts,
-        extracted.minHoleElev,
-        extracted.macroSatelliteDataUrl
-      );
-      this.macroSurroundMesh.receiveShadows = true;
-      updateMacroSurroundMix(
-        this.macroSurroundMesh,
-        satOpacity,
-        this.terrain.getGroundUvSettings().baseColor
-      );
-
+      this.terrain.loadUnifiedMapNGCourse(unified, satOpacity, payload.clearFeatures);
+      this.lastUnifiedCourseMeta = unified.meta;
       this.lastMapNGSource = payload.source;
       this.lastMapNGCropOpts = {
         cropCenterX: payload.cropCenterX,
@@ -5039,76 +5415,79 @@ class FairwayStudioApp {
         elevationScale: payload.elevationScale,
         isolateCourseOnly
       };
-      this.lastMapNGCourseCenter = { ...extracted.courseCenterWorld };
-      this.lastMapNGCourseSpan = Math.max(460, extracted.courseSpanMeters);
+      this.lastMapNGCourseCenter = { ...unified.courseCenterWorld };
+      this.lastMapNGCourseSpan = Math.max(460, unified.courseSpanMeters);
 
-      // Expand Designer world bounds & CSM shadow range to cover full isolated 18-hole course
-      const pad = Math.max(420, this.lastMapNGCourseSpan * 0.75);
+      // Expand Designer world bounds & CSM shadow range to cover full isolated course
       this.cameraCtrl.setDesignerWorldBounds(
-        this.lastMapNGCourseCenter.x - pad,
-        this.lastMapNGCourseCenter.x + pad,
-        this.lastMapNGCourseCenter.z - pad,
-        this.lastMapNGCourseCenter.z + pad,
-        Math.max(950, this.lastMapNGCourseSpan * 1.45)
+        -180,
+        unified.worldWidth + 180,
+        -180,
+        unified.worldLength + 180,
+        Math.max(1400, this.lastMapNGCourseSpan * 1.65)
       );
       if (this.shadowGenerator instanceof CascadedShadowGenerator) {
         this.shadowGenerator.shadowMaxZ = Math.max(550, Math.min(1200, this.lastMapNGCourseSpan * 0.85));
       }
 
-      // Re-seat Tee & Pin markers accurately on imported MapNG DEM elevations
-      const hole = this.courseManager.currentHole;
-      if (hole) {
-        hole.teePosition.y = this.terrain.getElevation(hole.teePosition.x, hole.teePosition.z);
-        hole.pinPosition.y = this.terrain.getElevation(hole.pinPosition.x, hole.pinPosition.z);
-        if (this.courseManager.activeTeeMesh) {
-          this.courseManager.activeTeeMesh.unfreezeWorldMatrix();
-          this.courseManager.activeTeeMesh.position.y = hole.teePosition.y;
-          this.courseManager.activeTeeMesh.computeWorldMatrix(true);
+      if (payload.clearFeatures) {
+        this.courseManager.clearHoleMarkers();
+        const hole = this.courseManager.currentHole;
+        if (hole) {
+          const cx = unified.courseCenterWorld.x;
+          const cz = unified.courseCenterWorld.z;
+          const cy = this.terrain.getElevation(cx, cz);
+          hole.teePosition = { x: Math.max(10, cx), y: cy, z: Math.max(10, cz - 80) };
+          hole.pinPosition = { x: Math.min(unified.worldWidth - 10, cx), y: cy, z: Math.min(unified.worldLength - 10, cz + 80) };
+          hole.waypoints = [];
         }
-        if (this.courseManager.activePinMesh) {
-          this.courseManager.activePinMesh.unfreezeWorldMatrix();
-          this.courseManager.activePinMesh.position.y = hole.pinPosition.y;
-          this.courseManager.activePinMesh.computeWorldMatrix(true);
-        }
+      } else {
+        this.courseManager.setupHoleVisuals(false);
       }
 
-      this.courseManager.courseData.mapngMeta = extracted.meta;
+      this.courseManager.courseData.mapngMeta = unified.meta;
       this.courseManager.refreshWaterMeshes();
       if (payload.clearScenery === false) {
         this.courseManager.refreshSceneryForFeatures();
       }
       this.scenery.syncColliders();
       this.ball?.setTreeColliders(this.scenery.treeColliders);
-      if (this.terrain.terrainMesh) {
+
+      if (this.activeMode === 'play') {
+        this.applyPlayModeCorridorCulling(true);
+      } else if (this.terrain.terrainMesh && this.terrain.width <= 400 && this.terrain.length <= 400) {
         this.havok.updateTerrainCollision(this.terrain.terrainMesh);
       }
+
       this.greenVisualizer?.rebuildSlopeGrid();
       this.selectCourseFeature(-1);
+      this.updateGroundSelectionOutline(false);
+      this.updateObjectSelectionOutline(null);
       this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
       this.ui.updateFeatureList(this.terrain.stampedFeatures, -1);
       this.refreshOutliner();
-      this.ui.updateSatelliteUi(Boolean(extracted.satelliteDataUrl), satOpacity);
+      this.ui.updateSatelliteUi(Boolean(unified.satelliteDataUrl), satOpacity);
       this.ui.showGroundPbrInspector({
         ...this.terrain.getGroundUvSettings(),
-        satelliteMapName: this.lastSatelliteFileName || (extracted.satelliteDataUrl ? 'mapng_satellite.jpg' : undefined)
+        satelliteMapName: this.lastSatelliteFileName || (unified.satelliteDataUrl ? 'mapng_satellite.jpg' : undefined)
       });
-      this.refreshShadowsAndMaterials(true);
       this.cameraCtrl.setCourseOverview3D(
         this.lastMapNGCourseCenter.x,
         this.lastMapNGCourseCenter.z,
         this.lastMapNGCourseSpan
       );
+      this.refreshShadowsAndMaterials(true);
       this.recordHistoryStep(snap.description, snap);
       this.updateDevStats();
       this.updateHUDDisplay();
 
       const keptSuffix = footprint ? ` • ${Math.round(footprint.coveragePct)}% golf course isolated` : '';
       this.ui.showToast(
-        `🗺️ Loaded ${payload.source.meta.levelName} (${extracted.minHoleElev.toFixed(1)}m–${extracted.maxHoleElev.toFixed(1)}m${keptSuffix})`,
+        `🗺️ Loaded ${payload.source.meta.levelName} (${unified.worldWidth}x${unified.worldLength}m @ ${unified.cellSize}m grid, ${unified.minHoleElev.toFixed(1)}m–${unified.maxHoleElev.toFixed(1)}m${keptSuffix})`,
         'success',
         3800
       );
-    }, 'Isolating Golf Course & Importing 16-bit MapNG Terrain...');
+    }, 'Building Unified Seamless MapNG Course Terrain...');
   }
 
   /**
