@@ -26,27 +26,27 @@ export const SURFACE_PROPERTIES: Record<SurfaceType, SurfaceProperties> = {
   [SurfaceType.ROUGH]: {
     name: 'Rough',
     color: [0.32, 0.42, 0.20],     // Earthy olive & golden-brown fescue rough
-    restitution: 0.25,             // Natural turf bounce on default course terrain
-    friction: 0.46,                // Balanced rough turf friction
-    rollingResistance: 0.48,       // Natural forward roll on course terrain
+    restitution: 0.24,             // Natural turf bounce on default course terrain
+    friction: 0.50,                // Balanced rough turf friction
+    rollingResistance: 0.64,       // Controlled forward roll on rough terrain
     liePenalty: 0.90,              // Mild 10% power reduction from default course rough
     spinMultiplier: 0.78           // Clean launch without nose-diving
   },
   [SurfaceType.FAIRWAY]: {
     name: 'Fairway',
     color: [0.38, 0.70, 0.28],     // Crisp bright fairway green
-    restitution: 0.32,             // Natural, authentic fairway bounce and forward release
-    friction: 0.32,                // Smooth fairway glide
-    rollingResistance: 0.28,       // Refined PGA-style rollout (~15-22m for driver)
+    restitution: 0.30,             // Natural, authentic fairway bounce and forward release
+    friction: 0.34,                // Smooth fairway glide
+    rollingResistance: 0.36,       // Refined PGA-style rollout (slightly tighter)
     liePenalty: 1.0,
     spinMultiplier: 1.0
   },
   [SurfaceType.GREEN]: {
     name: 'Green',
     color: [0.28, 0.78, 0.38],     // Silky manicured putting green
-    restitution: 0.28,             // Receptive tournament green with natural hop & smooth rollout
-    friction: 0.36,                // Balanced turf friction allowing smooth release on high shots
-    rollingResistance: 0.15,       // Realistic tournament Stimp 10.5 for controlled, readable putts
+    restitution: 0.26,             // Receptive tournament green with natural hop & smooth rollout
+    friction: 0.38,                // Balanced turf friction allowing controlled release
+    rollingResistance: 0.21,       // Slightly slower, readable tournament Stimp ~10.0 green roll
     liePenalty: 1.0,
     spinMultiplier: 1.0
   },

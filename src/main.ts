@@ -35,7 +35,10 @@ import {
   MaterialPluginBase,
   UniformBuffer,
   MaterialDefines,
-  ImageProcessingConfiguration
+  ImageProcessingConfiguration,
+  DefaultRenderingPipeline,
+  PostProcess,
+  Effect
 } from '@babylonjs/core';
 import '@babylonjs/core/Materials/Textures/Loaders/hdrTextureLoader.js';
 import '@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent.js';
@@ -127,7 +130,7 @@ class HdriUvScalePlugin extends MaterialPluginBase {
               vec3 hDir = normalize(reflectionVector);
               float phi = atan(hDir.z, hDir.x);
               float elev = asin(clamp(hDir.y, -0.9999, 0.9999));
-              float elevScaled = clamp(elev * max(0.05, uHdriUvParams.y) - uHdriUvParams.w * 0.78, -1.56, 1.56);
+              float elevScaled = clamp(elev * max(0.05, uHdriUvParams.y) - uHdriUvParams.w * 0.78, -1.55, 1.55);
               float cosEl = cos(elevScaled);
               float phiA = phi * max(0.05, uHdriUvParams.x) + uHdriUvParams.z * 6.28318530718;
               reflectionCoords = vec3(cosEl * cos(phiA), sin(elevScaled), cosEl * sin(phiA));
@@ -146,12 +149,25 @@ class HdriUvScalePlugin extends MaterialPluginBase {
               float elev = asin(clamp(hDir.y, -0.9999, 0.9999));
               float sU = max(0.05, uHdriUvParams.x);
               float sV = max(0.05, uHdriUvParams.y);
-              float elevScaled = clamp(elev * sV - uHdriUvParams.w * 0.78, -1.56, 1.56);
+              float elevScaled = clamp(elev * sV - uHdriUvParams.w * 0.78, -1.55, 1.55);
               float cosEl = cos(elevScaled);
               float sinEl = sin(elevScaled);
-              float phiA = phi * sU + uHdriUvParams.z * 6.28318530718;
+              float phiOff = uHdriUvParams.z * 6.28318530718;
+              float phiA = phi * sU + phiOff;
               vec3 dirA = vec3(cosEl * cos(phiA), sinEl, cosEl * sin(phiA));
-              environmentRadiance = sampleReflectionLod(reflectionSampler, dirA, reflectionLOD);
+              // C1-continuous dual-phase rear-seam blend eliminates any vertical discontinuity at phi = +-PI for any UV Scale!
+              float seamDist = abs(phi);
+              float seamBlend = smoothstep(2.40, 3.14159265, seamDist) * 0.5;
+              if (seamBlend > 0.001 && abs(sU - 1.0) > 0.001) {
+                float phiOpp = phi - (phi >= 0.0 ? 6.28318530718 : -6.28318530718);
+                float phiB = phiOpp * sU + phiOff;
+                vec3 dirB = vec3(cosEl * cos(phiB), sinEl, cosEl * sin(phiB));
+                vec4 radA = sampleReflectionLod(reflectionSampler, dirA, reflectionLOD);
+                vec4 radB = sampleReflectionLod(reflectionSampler, dirB, reflectionLOD);
+                environmentRadiance = mix(radA, radB, seamBlend);
+              } else {
+                environmentRadiance = sampleReflectionLod(reflectionSampler, dirA, reflectionLOD);
+              }
             } else {
               environmentRadiance = sampleReflectionLod(reflectionSampler, reflectionCoords, reflectionLOD);
             }
@@ -195,6 +211,11 @@ class FairwayStudioApp {
   private lastSatelliteFileName = '';
   private postSculptSyncTimer: number | null = null;
   private pendingSculptHistorySnap: ReturnType<FairwayStudioApp['captureHistorySnapshot']> | null = null;
+  private pendingContourHistorySnap: ReturnType<FairwayStudioApp['captureHistorySnapshot']> | null = null;
+  private postPipeline: DefaultRenderingPipeline | null = null;
+  private anamorphicPostProcess: PostProcess | null = null;
+  private solidViewOriginalMats = new Map<AbstractMesh, Material | null>();
+  private solidClayMats: Record<string, StandardMaterial> = {};
   private groundSelectionOutline: LinesMesh | null = null;
   private objectSelectionOutline: LinesMesh | null = null;
   private playFreezeTimerId: number | null = null;
@@ -383,19 +404,23 @@ class FairwayStudioApp {
       },
       onContourEdited: (featureIndex: number, newContour: PolygonPoint[], isFinal: boolean) => {
         if (!isFinal) {
+          if (!this.pendingContourHistorySnap) {
+            this.pendingContourHistorySnap = this.captureHistorySnapshot('Edit Traced Contour');
+          }
           this.terrain.updateTracedFeatureContour(featureIndex, newContour, true);
           this.updateFeatureDrapeMesh(featureIndex);
           return;
         }
+        const preDragSnap = this.pendingContourHistorySnap ?? this.captureHistorySnapshot('Edit Traced Contour');
+        this.pendingContourHistorySnap = null;
         this.runWithTerraformingLoader(() => {
-          const snap = this.captureHistorySnapshot('Edit Traced Contour');
           this.terrain.updateTracedFeatureContour(featureIndex, newContour, false);
           this.courseManager.refreshWaterMeshes();
-          if (this.terrain.terrainMesh) {
+          if (this.terrain.terrainMesh && this.terrain.width <= 400 && this.terrain.length <= 400) {
             this.havok.updateTerrainCollision(this.terrain.terrainMesh);
           }
           this.selectCourseFeature(featureIndex);
-          this.recordHistoryStep(snap.description, snap);
+          this.recordHistoryStep(preDragSnap.description, preDragSnap);
         }, 'Updating Traced Contour...');
       },
       onTraceStateChange: ({ mode, targetSurface, pointCount }) => {
@@ -546,10 +571,8 @@ class FairwayStudioApp {
     }
     this.registerSceneryShadows();
     if (this.shadowGenerator) {
-      const clampedDarkness = Math.max(0.12, Math.min(0.45, this.currentEnvSettings.shadowDarkness ?? 0.22));
-      this.shadowGenerator.darkness = clampedDarkness;
+      this.applyShadowDarknessSetting();
       if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-        this.shadowGenerator.penumbraDarkness = 0.85;
         if (this.cameraCtrl?.camera) {
           this.cameraCtrl.camera.getViewMatrix(true);
           this.cameraCtrl.camera.getProjectionMatrix(true);
@@ -697,25 +720,24 @@ class FairwayStudioApp {
         if (CascadedShadowGenerator.IsSupported) {
           const csm = new CascadedShadowGenerator(profile.shadowMapSize, this.sunLight);
           csm.numCascades = profile.shadowCascades;
-          csm.lambda = 0.58;
+          csm.lambda = 0.62;
           csm.shadowMaxZ = 480;
           csm.stabilizeCascades = true;
           csm.depthClamp = true;
           csm.autoCalcDepthBounds = false;
-          csm.cascadeBlendPercentage = 0.22;
-          csm.frustumEdgeFalloff = 0.10;
+          csm.cascadeBlendPercentage = 0.16;
+          csm.frustumEdgeFalloff = 0.08;
           csm.usePercentageCloserFiltering = true;
           csm.filteringQuality =
             profile.shadowFilterQuality === 'medium'
               ? CascadedShadowGenerator.QUALITY_MEDIUM
               : CascadedShadowGenerator.QUALITY_LOW;
-          csm.penumbraDarkness = 0.85;
-          csm.darkness = Math.max(0.12, Math.min(0.45, this.currentEnvSettings.shadowDarkness ?? 0.22));
-          csm.bias = 0.00045;
-          csm.normalBias = 0.006;
+          csm.bias = 0.0006;
+          csm.normalBias = 0.012;
           csm.transparencyShadow = true;
           csm.splitFrustum();
           this.shadowGenerator = csm;
+          this.applyShadowDarknessSetting();
         } else {
           this.sunLight.autoCalcShadowZBounds = false;
           this.sunLight.autoUpdateExtends = false;
@@ -1349,6 +1371,9 @@ class FairwayStudioApp {
             const y = this.terrain.getElevation(f.centerX, f.centerZ);
             this.cameraCtrl.frameOnTarget(new Vector3(f.centerX, y, f.centerZ), 20);
           }
+        } else if (item.id === 'marker_golf_ball' && this.ball && this.ball.mesh) {
+          this.selectMesh(this.ball.mesh);
+          this.cameraCtrl.frameOnTarget(this.ball.position.clone(), 6);
         } else if (item.meshId) {
           const m = this.scene.getMeshById(item.meshId) || this.scene.getMeshByName(item.id);
           if (m && m instanceof Mesh) {
@@ -4947,10 +4972,7 @@ class FairwayStudioApp {
     }
 
     if (this.shadowGenerator) {
-      this.shadowGenerator.darkness = Math.max(0.12, Math.min(0.45, this.currentEnvSettings.shadowDarkness ?? 0.22));
-      if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-        this.shadowGenerator.penumbraDarkness = 0.85;
-      }
+      this.applyShadowDarknessSetting();
       if (this.skyboxMesh) {
         this.shadowGenerator.removeShadowCaster(this.skyboxMesh, true);
       }
@@ -4959,6 +4981,7 @@ class FairwayStudioApp {
     this.scene.environmentIntensity = this.currentEnvSettings.hdriIntensity;
 
     this.applyHdriTransform();
+    this.applyPostProcessingSettings();
 
     if (reloadTexture && this.currentEnvSettings.hdriUrl) {
       const url = this.currentEnvSettings.hdriUrl;
@@ -5079,11 +5102,112 @@ class FairwayStudioApp {
     setTimeout(loadNext, 6000);
   }
 
+  private applyShadowDarknessSetting() {
+    if (!this.shadowGenerator) return;
+    // Intuitive 0.0 (very soft/light) -> 1.0 (deep dramatic dark shadow) mapped to Babylon's inverted darkness
+    const uiDarkness = Math.max(0.0, Math.min(1.0, this.currentEnvSettings.shadowDarkness ?? 0.72));
+    const babylonDarkness = Math.max(0.0, Math.min(0.92, 1.0 - uiDarkness));
+    this.shadowGenerator.darkness = babylonDarkness;
+    if (this.shadowGenerator instanceof CascadedShadowGenerator) {
+      this.shadowGenerator.penumbraDarkness = Math.max(0.25, Math.min(1.0, 0.35 + uiDarkness * 0.65));
+    }
+  }
+
+  private applyPostProcessingSettings() {
+    const cam = this.cameraCtrl?.camera || this.scene.activeCamera;
+    if (!cam) return;
+
+    // 1. Half-resolution GPU-Optimized HDR Bloom (DefaultRenderingPipeline)
+    const bloomOn = Boolean(this.currentEnvSettings.bloomEnabled);
+    if (bloomOn) {
+      if (!this.postPipeline) {
+        this.postPipeline = new DefaultRenderingPipeline('FairwayPostPipeline', true, this.scene, [cam]);
+        this.postPipeline.samples = 1;
+        this.postPipeline.fxaaEnabled = false;
+        this.postPipeline.imageProcessingEnabled = false; // Scene imageProcessing handles ACES tonemapping
+        this.postPipeline.bloomScale = 0.5; // Half-resolution for minimal GPU cost
+      }
+      this.postPipeline.bloomEnabled = true;
+      this.postPipeline.bloomWeight = Math.max(0.0, Math.min(1.5, this.currentEnvSettings.bloomWeight ?? 0.32));
+      this.postPipeline.bloomThreshold = Math.max(0.1, Math.min(1.5, this.currentEnvSettings.bloomThreshold ?? 0.85));
+      this.postPipeline.bloomKernel = Math.max(16, Math.min(128, this.currentEnvSettings.bloomKernel ?? 48));
+    } else if (this.postPipeline) {
+      this.postPipeline.bloomEnabled = false;
+    }
+
+    // 2. Next-Gen Single-Pass Half-Res Anamorphic Lens Flare PostProcess (<0.3ms GPU cost, 0ms when off)
+    const anaOn = Boolean(this.currentEnvSettings.anamorphicEnabled);
+    if (anaOn) {
+      if (!Effect.ShadersStore['anamorphicFlareFragmentShader']) {
+        Effect.ShadersStore['anamorphicFlareFragmentShader'] = `
+          precision highp float;
+          varying vec2 vUV;
+          uniform sampler2D textureSampler;
+          uniform vec4 uFlareParams; // x: intensity, y: threshold, z: stretch, w: aspectInv
+          void main(void) {
+            vec4 baseCol = texture2D(textureSampler, vUV);
+            float intensity = uFlareParams.x;
+            float thresh = uFlareParams.y;
+            float stretch = uFlareParams.z * 0.018;
+            vec3 streak = vec3(0.0);
+            float weights[5];
+            weights[0] = 0.30;
+            weights[1] = 0.23;
+            weights[2] = 0.16;
+            weights[3] = 0.10;
+            weights[4] = 0.06;
+            for (int i = -4; i <= 4; i++) {
+              float fi = float(i);
+              float offX = fi * stretch;
+              vec2 sUv = vec2(clamp(vUV.x + offX, 0.001, 0.999), vUV.y);
+              vec3 sCol = texture2D(textureSampler, sUv).rgb;
+              float lum = dot(sCol, vec3(0.2126, 0.7152, 0.0722));
+              float bright = max(0.0, lum - thresh) / max(0.08, 1.0 - thresh * 0.35);
+              int idx = i < 0 ? -i : i;
+              float w = (idx == 0) ? weights[0] : (idx == 1) ? weights[1] : (idx == 2) ? weights[2] : (idx == 3) ? weights[3] : weights[4];
+              // Subtle cinema anamorphic cyan-blue edge tint with warm gold core
+              vec3 tint = mix(vec3(1.0, 0.94, 0.82), vec3(0.42, 0.78, 1.0), float(idx) * 0.24);
+              streak += sCol * bright * w * tint;
+            }
+            gl_FragColor = vec4(baseCol.rgb + streak * intensity * 0.65, baseCol.a);
+          }
+        `;
+      }
+      if (!this.anamorphicPostProcess) {
+        this.anamorphicPostProcess = new PostProcess(
+          'AnamorphicFlarePP',
+          'anamorphicFlare',
+          ['uFlareParams'],
+          null,
+          1.0,
+          cam,
+          Texture.BILINEAR_SAMPLINGMODE,
+          this.engine,
+          false
+        );
+        this.anamorphicPostProcess.onApply = (effect) => {
+          const engW = Math.max(1, this.engine.getRenderWidth());
+          const engH = Math.max(1, this.engine.getRenderHeight());
+          effect.setFloat4(
+            'uFlareParams',
+            Math.max(0.0, Math.min(2.0, this.currentEnvSettings.anamorphicIntensity ?? 0.55)),
+            Math.max(0.2, Math.min(1.6, this.currentEnvSettings.anamorphicThreshold ?? 0.82)),
+            Math.max(0.2, Math.min(2.5, this.currentEnvSettings.anamorphicStretch ?? 1.10)),
+            engH / engW
+          );
+        };
+      }
+    } else if (this.anamorphicPostProcess) {
+      this.anamorphicPostProcess.dispose(cam);
+      this.anamorphicPostProcess = null;
+    }
+  }
+
   private applyHdriTransform() {
     const rotDeg = this.currentEnvSettings.hdriRotation || 0;
     const rotRad = (rotDeg * Math.PI) / 180;
     const scaleU = Math.max(0.05, this.currentEnvSettings.hdriScaleU ?? 1.0);
-    const scaleV = scaleU;
+    const scaleV = Math.max(0.05, this.currentEnvSettings.hdriScaleV ?? 1.0);
     const offsetU = this.currentEnvSettings.hdriOffsetU ?? 0.0;
     const offsetV = this.currentEnvSettings.hdriOffsetV ?? 0.0;
 
@@ -5149,6 +5273,18 @@ class FairwayStudioApp {
         posZ: hole.pinPosition.z,
         isVisible: this.courseManager.activePinMesh.isVisible,
         meshId: this.courseManager.activePinMesh.id
+      });
+    }
+    if (this.ball && this.ball.mesh && !this.ball.mesh.isDisposed()) {
+      items.push({
+        id: 'marker_golf_ball',
+        name: 'Golf Ball',
+        category: 'markers',
+        icon: '⚪',
+        posX: this.ball.position.x,
+        posZ: this.ball.position.z,
+        isVisible: this.ball.mesh.isVisible,
+        meshId: this.ball.mesh.id
       });
     }
 
@@ -5726,6 +5862,80 @@ class FairwayStudioApp {
     }, 'Building Unified Seamless MapNG Course Terrain...');
   }
 
+  private getOrCreateSolidClayMaterial(key: string, hex: string): StandardMaterial {
+    if (!this.solidClayMats[key]) {
+      const m = new StandardMaterial(`solidClay_${key}`, this.scene);
+      m.diffuseColor = Color3.FromHexString(hex);
+      m.specularColor = new Color3(0.08, 0.08, 0.08);
+      m.roughness = 0.88;
+      this.solidClayMats[key] = m;
+    }
+    return this.solidClayMats[key];
+  }
+
+  private applySolidViewMaterialColors(enable: boolean) {
+    if (!enable) {
+      for (const [mesh, origMat] of this.solidViewOriginalMats.entries()) {
+        if (!mesh.isDisposed()) {
+          mesh.material = origMat;
+        }
+      }
+      this.solidViewOriginalMats.clear();
+      return;
+    }
+
+    const categorizeMesh = (m: AbstractMesh): string | null => {
+      const n = (m.name || '').toLowerCase();
+      if (n === 'golfterrain') return 'terrain';
+      if (
+        !n ||
+        n.includes('skybox') ||
+        n.includes('gizmo') ||
+        n.includes('grid') ||
+        n.includes('contour') ||
+        n.includes('brush') ||
+        n.includes('trace') ||
+        n.includes('aim') ||
+        n.includes('drape') ||
+        n.includes('proxy') ||
+        n.includes('outline') ||
+        n.includes('arrow')
+      ) {
+        return null;
+      }
+      if (n.includes('ball')) return 'ball';
+      if (n.includes('pin') || n.includes('flag') || n.includes('cup')) return 'pin';
+      if (n.includes('tee')) return 'tee';
+      if (n.includes('water')) return 'water';
+      if (n.includes('pine') || n.includes('tree') || n.includes('oak') || n.includes('bush') || n.includes('canopy') || n.includes('foliage') || n.includes('leaf')) return 'foliage';
+      if (n.includes('trunk') || n.includes('wood') || n.includes('bark')) return 'wood';
+      if (n.includes('rock') || n.includes('cliff') || n.includes('stone') || n.includes('dam')) return 'rock';
+      return 'prop';
+    };
+
+    const palette: Record<string, string> = {
+      terrain: '#5c8a47',
+      ball: '#f8fafc',
+      pin: '#e04f5f',
+      tee: '#e08b3e',
+      water: '#3898c8',
+      foliage: '#2f6e49',
+      wood: '#8b5e3c',
+      rock: '#7c8696',
+      prop: '#8e7cc3'
+    };
+
+    for (const m of this.scene.meshes) {
+      if (m.isDisposed() || m instanceof LinesMesh || m instanceof InstancedMesh) continue;
+      const cat = categorizeMesh(m);
+      if (!cat) continue;
+      if (!this.solidViewOriginalMats.has(m)) {
+        this.solidViewOriginalMats.set(m, m.material);
+      }
+      m.material = this.getOrCreateSolidClayMaterial(cat, palette[cat]);
+    }
+  }
+
   /**
    * Switches viewport shading mode: Wireframe, Solid (Clay), Material Preview, or Rendered.
    * Significantly reduces processing and memory load on large courses.
@@ -5742,6 +5952,7 @@ class FairwayStudioApp {
 
     switch (mode) {
       case 'wireframe':
+        this.applySolidViewMaterialColors(false);
         this.scene.forceWireframe = true;
         this.scene.texturesEnabled = false;
         this.scene.shadowsEnabled = false;
@@ -5755,6 +5966,7 @@ class FairwayStudioApp {
         this.scene.forceWireframe = false;
         this.scene.texturesEnabled = false;
         this.scene.shadowsEnabled = false;
+        this.applySolidViewMaterialColors(true);
         if (this.skyboxMesh) {
           this.skyboxMesh.setEnabled(false);
         }
@@ -5762,6 +5974,7 @@ class FairwayStudioApp {
         break;
 
       case 'material': {
+        this.applySolidViewMaterialColors(false);
         const prevBlock = this.scene.blockMaterialDirtyMechanism;
         this.scene.blockMaterialDirtyMechanism = false;
         this.scene.forceWireframe = false;
@@ -5777,6 +5990,7 @@ class FairwayStudioApp {
       }
 
       case 'rendered': {
+        this.applySolidViewMaterialColors(false);
         const prevBlock = this.scene.blockMaterialDirtyMechanism;
         this.scene.blockMaterialDirtyMechanism = false;
         this.scene.forceWireframe = false;

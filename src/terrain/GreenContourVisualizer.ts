@@ -180,7 +180,8 @@ export class GreenContourVisualizer {
       f => f.surfaceType === SurfaceType.GREEN || (f.surfaceType as any) === 'green' || (f.surfaceType as any) === 'GREEN'
     );
     if (greenFeat) {
-      const halfDim = Math.max(greenFeat.width, greenFeat.length) * 0.65 + 4;
+      const collarPad = Math.max(3.5, (greenFeat.materialSettings?.collarWidth ?? 2.0) + 3.5);
+      const halfDim = Math.max(greenFeat.width, greenFeat.length) * 0.65 + collarPad;
       minX = Math.max(0, Math.floor(greenFeat.centerX - halfDim));
       maxX = Math.min(this.terrain.width, Math.ceil(greenFeat.centerX + halfDim));
       minZ = Math.max(0, Math.floor(greenFeat.centerZ - halfDim));
@@ -190,7 +191,8 @@ export class GreenContourVisualizer {
       const step = Math.max(1, this.terrain.cellSize || 1);
       for (let z = 0; z < this.terrain.length; z += step) {
         for (let x = 0; x < this.terrain.width; x += step) {
-          if (this.terrain.getSurfaceAt(x, z) === SurfaceType.GREEN) {
+          const s = this.terrain.getSurfaceAt(x, z);
+          if (s === SurfaceType.GREEN || s === SurfaceType.FRINGE) {
             hasGreen = true;
             if (x < minX) minX = x;
             if (x > maxX) maxX = x;
@@ -199,10 +201,10 @@ export class GreenContourVisualizer {
           }
         }
       }
-      minX = Math.max(0, Math.floor(minX - 2));
-      maxX = Math.min(this.terrain.width, Math.ceil(maxX + 2));
-      minZ = Math.max(0, Math.floor(minZ - 2));
-      maxZ = Math.min(this.terrain.length, Math.ceil(maxZ + 2));
+      minX = Math.max(0, Math.floor(minX - 4));
+      maxX = Math.min(this.terrain.width, Math.ceil(maxX + 4));
+      minZ = Math.max(0, Math.floor(minZ - 4));
+      maxZ = Math.min(this.terrain.length, Math.ceil(maxZ + 4));
     }
 
     if (!hasGreen) return;
@@ -219,15 +221,23 @@ export class GreenContourVisualizer {
       }
     };
 
-    const isInteriorGreen = (wx: number, wz: number): boolean => {
-      const x0 = Math.floor(wx);
-      const z0 = Math.floor(wz);
-      return (
-        this.terrain.getSurfaceAt(x0, z0) === SurfaceType.GREEN &&
-        this.terrain.getSurfaceAt(x0 + 1, z0) === SurfaceType.GREEN &&
-        this.terrain.getSurfaceAt(x0, z0 + 1) === SurfaceType.GREEN &&
-        this.terrain.getSurfaceAt(x0 + 1, z0 + 1) === SurfaceType.GREEN
-      );
+    // Cover both the Putting Green AND its surrounding Collar / Fringe cleanly
+    const isGreenOrCollar = (wx: number, wz: number): boolean => {
+      const s = this.terrain.getSurfaceAt(wx, wz);
+      if (s === SurfaceType.GREEN || s === SurfaceType.FRINGE) return true;
+      if (greenFeat) {
+        const collarW = Math.max(1.8, greenFeat.materialSettings?.collarWidth ?? 2.0);
+        const dx = wx - greenFeat.centerX;
+        const dz = wz - greenFeat.centerZ;
+        const cosR = Math.cos(-(greenFeat.rotationRad || 0));
+        const sinR = Math.sin(-(greenFeat.rotationRad || 0));
+        const lx = dx * cosR - dz * sinR;
+        const lz = dx * sinR + dz * cosR;
+        const rx = Math.max(1, greenFeat.width * 0.5 + collarW);
+        const rz = Math.max(1, greenFeat.length * 0.5 + collarW);
+        return (lx * lx) / (rx * rx) + (lz * lz) / (rz * rz) <= 1.0;
+      }
+      return false;
     };
 
     // 1. X-direction contour lines (every 1.5m in Z)
@@ -236,8 +246,8 @@ export class GreenContourVisualizer {
       let curColors: Color4[] = [];
 
       for (let x = minX; x <= maxX; x += sampleStep) {
-        if (isInteriorGreen(x, z)) {
-          const elev = this.terrain.getElevation(x, z) + 0.024;
+        if (isGreenOrCollar(x, z)) {
+          const elev = this.terrain.getElevation(x, z) + 0.028;
           const normal = this.terrain.getNormal(x, z);
           const slope = Math.sqrt(normal.x * normal.x + normal.z * normal.z);
           curSegment.push(new Vector3(x, elev, z));
@@ -263,8 +273,8 @@ export class GreenContourVisualizer {
       let curColors: Color4[] = [];
 
       for (let z = minZ; z <= maxZ; z += sampleStep) {
-        if (isInteriorGreen(x, z)) {
-          const elev = this.terrain.getElevation(x, z) + 0.024;
+        if (isGreenOrCollar(x, z)) {
+          const elev = this.terrain.getElevation(x, z) + 0.028;
           const normal = this.terrain.getNormal(x, z);
           const slope = Math.sqrt(normal.x * normal.x + normal.z * normal.z);
           curSegment.push(new Vector3(x, elev, z));
@@ -317,14 +327,14 @@ export class GreenContourVisualizer {
     const dotSpacing = 2.0;
     for (let z = minZ + 0.75; z <= maxZ; z += dotSpacing) {
       for (let x = minX + 0.75; x <= maxX; x += dotSpacing) {
-        if (isInteriorGreen(x, z)) {
+        if (isGreenOrCollar(x, z)) {
           const normal = this.terrain.getNormal(x, z);
           // Normal.x and normal.z point downhill (-dh/dx, -dh/dz), exactly matching ball break
           const slopeX = normal.x;
           const slopeZ = normal.z;
           const slopeMag = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
 
-          if (slopeMag > 0.005) {
+          if (slopeMag > 0.002) {
             const dirX = slopeX / slopeMag;
             const dirZ = slopeZ / slopeMag;
 
@@ -340,6 +350,10 @@ export class GreenContourVisualizer {
             headMesh.material = mat;
             midMesh.material = mat;
             tailMesh.material = mat;
+
+            headMesh.renderingGroupId = 1;
+            midMesh.renderingGroupId = 1;
+            tailMesh.renderingGroupId = 1;
 
             headMesh.isVisible = true;
             midMesh.isVisible = true;
@@ -368,7 +382,7 @@ export class GreenContourVisualizer {
       }
     }
 
-    templateSphere.dispose();
+    // Keep cometTemplate alive (invisible) so all InstancedMesh slope dots remain active and visible!
     this.beadParent.setEnabled(this.dotsAlpha > 0.005);
     this.updateComets(0.016);
   }

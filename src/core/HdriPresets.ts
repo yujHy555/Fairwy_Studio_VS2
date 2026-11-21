@@ -174,6 +174,14 @@ export function presetToEnvironmentSettings(p: HdriPreset): EnvironmentSettings 
     sunElevation: p.sunElevation,
     sunIntensity: p.sunIntensity,
     sunColor: p.sunColor,
-    shadowDarkness: p.shadowDarkness
+    shadowDarkness: Number(Math.max(0.15, Math.min(0.95, 1.0 - p.shadowDarkness)).toFixed(2)),
+    bloomEnabled: false,
+    bloomThreshold: 0.85,
+    bloomWeight: 0.32,
+    bloomKernel: 48,
+    anamorphicEnabled: false,
+    anamorphicIntensity: 0.55,
+    anamorphicThreshold: 0.82,
+    anamorphicStretch: 1.10
   };
 }

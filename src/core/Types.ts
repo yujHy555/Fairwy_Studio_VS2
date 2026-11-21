@@ -102,7 +102,15 @@ export interface EnvironmentSettings {
   sunElevation: number;       // degrees (5 - 85)
   sunIntensity: number;       // 0.2 - 3.0
   sunColor: string;           // hex #ffffff
-  shadowDarkness: number;     // 0.05 - 0.70
+  shadowDarkness: number;     // 0.0 (light/soft) to 1.0 (deep dark)
+  bloomEnabled?: boolean;
+  bloomThreshold?: number;    // 0.1 - 1.5
+  bloomWeight?: number;       // 0.0 - 1.5
+  bloomKernel?: number;       // 16 - 128
+  anamorphicEnabled?: boolean;
+  anamorphicIntensity?: number; // 0.0 - 2.0
+  anamorphicThreshold?: number; // 0.2 - 1.6
+  anamorphicStretch?: number;   // 0.2 - 2.5
 }
 
 export interface GolfCourseData {

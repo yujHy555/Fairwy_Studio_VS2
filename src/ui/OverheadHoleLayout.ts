@@ -403,8 +403,8 @@ export class OverheadHoleLayout {
   private viewCenterZ: number = 0;
   private viewAngle: number = 0; // rotation to align hole vertically
   private viewScale: number = 1.0;
-  private canvasWidth: number = 456;
-  private canvasHeight: number = 480;
+  private canvasWidth: number = 516;
+  private canvasHeight: number = 540;
   private rotMinZ: number = 0;
 
   // Tooltip
@@ -649,24 +649,46 @@ export class OverheadHoleLayout {
     const H = this.canvasHeight;
     const data = this.lastData;
 
-    // 1. Tactical Deep Rough Dark Background
+    // 1. TRIPLE-AAA Broadcast Deep Rough & Topographic Contour Backdrop
     ctx.clearRect(0, 0, W, H);
-    const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.5, 10, W * 0.5, H * 0.5, W * 0.75);
-    bgGrad.addColorStop(0, '#0c1a12');
-    bgGrad.addColorStop(1, '#050c08');
+    const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.44, 18, W * 0.5, H * 0.5, Math.max(W, H) * 0.72);
+    bgGrad.addColorStop(0, '#173620');
+    bgGrad.addColorStop(0.55, '#0f2516');
+    bgGrad.addColorStop(1, '#07120b');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
 
-    // Subtle 50m tactical yardage grid lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+    // Subtle organic topographic contour bands for AAA architectural depth
+    ctx.save();
+    ctx.strokeStyle = 'rgba(134, 239, 172, 0.055)';
+    ctx.lineWidth = 1.1;
+    for (let ring = 1; ring <= 6; ring++) {
+      ctx.beginPath();
+      const rx = W * (0.14 * ring);
+      const ry = H * (0.13 * ring);
+      for (let i = 0; i <= 48; i++) {
+        const a = (i / 48) * Math.PI * 2;
+        const wob = 1 + 0.08 * Math.sin(a * 3 + ring * 1.1) + 0.05 * Math.cos(a * 5 - ring * 0.7);
+        const px = W * 0.5 + Math.cos(a) * rx * wob;
+        const py = H * 0.48 + Math.sin(a) * ry * wob;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Subtle tactical yardage grid
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.032)';
     ctx.lineWidth = 1;
-    for (let y = 0; y < H; y += 35) {
+    for (let y = 0; y < H; y += 44) {
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(W, y);
       ctx.stroke();
     }
-    for (let x = 0; x < W; x += 35) {
+    for (let x = 0; x < W; x += 44) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, H);
@@ -827,75 +849,214 @@ export class OverheadHoleLayout {
     const halfL = feat.length * 0.5;
     const shapeIdx = feat.bunkerShapeIndex ?? 0;
 
-    // Generate local meter points
-    let pts: { x: number; z: number }[] = [];
+    // Generate world-space polygon points (supports traced contours, organic dogleg splines, and harmonic shapes!)
+    let worldPts: { x: number; z: number }[] = [];
 
-    if (feat.surfaceType === SurfaceType.FAIRWAY) {
-      // Procedural Fairway outline based on preset
-      const preset = feat.id || 'fairway_landing_straight';
-      pts = this.generateFairwayPolygon(halfW, halfL, preset);
-    } else if (feat.surfaceType === SurfaceType.GREEN) {
-      pts = this.generateEllipsePoints(halfW * 0.95, halfL * 0.95, 32);
-    } else if (feat.surfaceType === SurfaceType.BUNKER) {
-      pts = this.generateBunkerPoints(halfW, halfL, 0.78, shapeIdx, 36);
-    } else if (feat.surfaceType === SurfaceType.WATER) {
-      pts = this.generateEllipsePoints(halfW * 0.95, halfL * 0.95, 32);
+    if (feat.contour && feat.contour.length >= 3) {
+      worldPts = feat.contour.map((p) => ({ x: p.x, z: p.z }));
+    } else if (feat.doglegPoints && feat.doglegPoints.length >= 3) {
+      const wps = feat.doglegPoints;
+      const leftPts: { x: number; z: number }[] = [];
+      const rightPts: { x: number; z: number }[] = [];
+      for (let i = 0; i < wps.length; i++) {
+        const prev = wps[Math.max(0, i - 1)];
+        const next = wps[Math.min(wps.length - 1, i + 1)];
+        const tx = next.x - prev.x;
+        const tz = next.z - prev.z;
+        const len = Math.hypot(tx, tz) || 1;
+        const nx = -tz / len;
+        const nz = tx / len;
+        const hw = Math.max(8, (wps[i].width || 28) * 0.52);
+        leftPts.push({ x: wps[i].x + nx * hw, z: wps[i].z + nz * hw });
+        rightPts.push({ x: wps[i].x - nx * hw, z: wps[i].z - nz * hw });
+      }
+      worldPts = [...leftPts, ...rightPts.reverse()];
     } else {
-      pts = this.generateEllipsePoints(halfW * 0.90, halfL * 0.90, 24);
+      let localPts: { x: number; z: number }[] = [];
+      if (feat.surfaceType === SurfaceType.FAIRWAY) {
+        const preset = feat.id || 'fairway_landing_straight';
+        localPts = this.generateFairwayPolygon(halfW, halfL, preset);
+      } else if (feat.surfaceType === SurfaceType.GREEN) {
+        localPts = this.generateOrganicEllipsePoints(halfW * 0.96, halfL * 0.96, 44, 0.08, 1.3);
+      } else if (feat.surfaceType === SurfaceType.BUNKER) {
+        localPts = this.generateBunkerPoints(halfW, halfL, 0.80, shapeIdx, 44);
+      } else if (feat.surfaceType === SurfaceType.WATER) {
+        localPts = this.generateOrganicEllipsePoints(halfW * 0.96, halfL * 0.96, 44, 0.14, 2.7);
+      } else {
+        localPts = this.generateOrganicEllipsePoints(halfW * 0.92, halfL * 0.92, 32, 0.04, 0.5);
+      }
+      const cosR = Math.cos(feat.rotationRad);
+      const sinR = Math.sin(feat.rotationRad);
+      worldPts = localPts.map((pt) => ({
+        x: feat.centerX + pt.x * cosR - pt.z * sinR,
+        z: feat.centerZ + pt.x * sinR + pt.z * cosR
+      }));
     }
 
-    if (pts.length < 3) return;
+    if (worldPts.length < 3) return;
 
-    // Transform local feature points to canvas coordinates
-    const cosR = Math.cos(feat.rotationRad);
-    const sinR = Math.sin(feat.rotationRad);
+    const canvasPts = worldPts.map((p) => this.worldToCanvas(p.x, p.z));
+    let minCx = Infinity, maxCx = -Infinity, minCy = Infinity, maxCy = -Infinity;
+    for (const c of canvasPts) {
+      if (c.x < minCx) minCx = c.x;
+      if (c.x > maxCx) maxCx = c.x;
+      if (c.y < minCy) minCy = c.y;
+      if (c.y > maxCy) maxCy = c.y;
+    }
+    const midCx = (minCx + maxCx) * 0.5;
+    const midCy = (minCy + maxCy) * 0.5;
+
+    // Trace smooth quadratic-spline closed path for organic AAA golf map edges
+    const traceSmoothClosedPath = (pts: { x: number; y: number }[]) => {
+      const n = pts.length;
+      ctx.beginPath();
+      const firstMidX = (pts[n - 1].x + pts[0].x) * 0.5;
+      const firstMidY = (pts[n - 1].y + pts[0].y) * 0.5;
+      ctx.moveTo(firstMidX, firstMidY);
+      for (let i = 0; i < n; i++) {
+        const cur = pts[i];
+        const next = pts[(i + 1) % n];
+        ctx.quadraticCurveTo(cur.x, cur.y, (cur.x + next.x) * 0.5, (cur.y + next.y) * 0.5);
+      }
+      ctx.closePath();
+    };
 
     ctx.save();
-    ctx.beginPath();
-    for (let i = 0; i < pts.length; i++) {
-      const lx = pts[i].x;
-      const lz = pts[i].z;
-      const wx = feat.centerX + lx * cosR - lz * sinR;
-      const wz = feat.centerZ + lx * sinR + lz * cosR;
-      const c = this.worldToCanvas(wx, wz);
-      if (i === 0) ctx.moveTo(c.x, c.y);
-      else ctx.lineTo(c.x, c.y);
-    }
-    ctx.closePath();
+    traceSmoothClosedPath(canvasPts);
 
     if (feat.surfaceType === SurfaceType.FAIRWAY) {
-      ctx.fillStyle = '#2ea439';
-      ctx.strokeStyle = '#227b2b';
-      ctx.lineWidth = 1;
+      // Soft first-cut rough outer halo
+      ctx.save();
+      ctx.strokeStyle = 'rgba(34, 139, 54, 0.55)';
+      ctx.lineWidth = Math.max(4, 2.8 * this.viewScale);
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      ctx.restore();
+
+      const fwGrad = ctx.createLinearGradient(minCx, minCy, maxCx, maxCy);
+      fwGrad.addColorStop(0, '#36b847');
+      fwGrad.addColorStop(0.5, '#2ea43c');
+      fwGrad.addColorStop(1, '#258a32');
+      ctx.fillStyle = fwGrad;
       ctx.fill();
+
+      // Clipped broadcast mowing stripes
+      ctx.save();
+      ctx.clip();
+      const stripeW = Math.max(5, 4.8 * this.viewScale);
+      ctx.fillStyle = 'rgba(210, 255, 175, 0.13)';
+      for (let y = minCy - 20; y < maxCy + 20; y += stripeW * 2) {
+        ctx.fillRect(minCx - 20, y, (maxCx - minCx) + 40, stripeW);
+      }
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(134, 239, 172, 0.45)';
+      ctx.lineWidth = 1.25;
       ctx.stroke();
     } else if (feat.surfaceType === SurfaceType.GREEN) {
-      ctx.fillStyle = '#39db6e';
-      ctx.strokeStyle = '#239648';
-      ctx.lineWidth = 1.5;
+      // Sculpted Fringe Collar outer rim
+      ctx.save();
+      ctx.strokeStyle = 'rgba(34, 160, 74, 0.72)';
+      ctx.lineWidth = Math.max(4.5, 2.2 * this.viewScale);
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      ctx.restore();
+
+      const gGrad = ctx.createRadialGradient(midCx - 4, midCy - 4, 2, midCx, midCy, Math.max(12, (maxCx - minCx) * 0.65));
+      gGrad.addColorStop(0, '#5ef08b');
+      gGrad.addColorStop(0.7, '#34d466');
+      gGrad.addColorStop(1, '#22a84c');
+      ctx.fillStyle = gGrad;
       ctx.fill();
+
+      // Crisp putting green contour highlight & fine mowing sheen
+      ctx.save();
+      ctx.clip();
+      const gStripe = Math.max(3, 2.0 * this.viewScale);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+      for (let x = minCx - 10; x < maxCx + 10; x += gStripe * 2) {
+        ctx.fillRect(x, minCy - 10, gStripe, (maxCy - minCy) + 20);
+      }
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(187, 247, 208, 0.75)';
+      ctx.lineWidth = 1.3;
       ctx.stroke();
     } else if (feat.surfaceType === SurfaceType.BUNKER) {
-      ctx.fillStyle = '#f6e4be';
-      ctx.strokeStyle = '#7c6d48';
-      ctx.lineWidth = 1;
+      // Sculpted turf lip shadow around bunker
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+      ctx.shadowBlur = 5;
+      ctx.shadowOffsetY = 2;
+      const bGrad = ctx.createRadialGradient(midCx - 2, midCy - 2, 1, midCx, midCy, Math.max(8, (maxCx - minCx) * 0.65));
+      bGrad.addColorStop(0, '#fdf5dc');
+      bGrad.addColorStop(0.65, '#f2ddb0');
+      bGrad.addColorStop(1, '#c9af7a');
+      ctx.fillStyle = bGrad;
       ctx.fill();
+      ctx.restore();
+
+      ctx.strokeStyle = '#8b7346';
+      ctx.lineWidth = 1.4;
       ctx.stroke();
     } else if (feat.surfaceType === SurfaceType.WATER) {
-      ctx.fillStyle = '#0284c7';
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 1.2;
+      const wGrad = ctx.createRadialGradient(midCx, midCy, 3, midCx, midCy, Math.max(14, (maxCx - minCx) * 0.65));
+      wGrad.addColorStop(0, '#0369a1');
+      wGrad.addColorStop(0.65, '#0284c7');
+      wGrad.addColorStop(1, '#38bdf8');
+      ctx.fillStyle = wGrad;
       ctx.fill();
+
+      // Subtle water ripple shimmer
+      ctx.save();
+      ctx.clip();
+      ctx.strokeStyle = 'rgba(224, 242, 254, 0.25)';
+      ctx.lineWidth = 1;
+      for (let y = minCy + 6; y < maxCy - 4; y += 8) {
+        ctx.beginPath();
+        ctx.moveTo(minCx + 4, y);
+        ctx.quadraticCurveTo(midCx, y - 2.5, maxCx - 4, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(186, 230, 253, 0.75)';
+      ctx.lineWidth = 1.5;
       ctx.stroke();
     } else if (feat.surfaceType === SurfaceType.TEE) {
-      ctx.fillStyle = '#43a047';
-      ctx.strokeStyle = '#2e7d32';
-      ctx.lineWidth = 1;
+      const tGrad = ctx.createLinearGradient(minCx, minCy, maxCx, maxCy);
+      tGrad.addColorStop(0, '#4ade80');
+      tGrad.addColorStop(1, '#228b3b');
+      ctx.fillStyle = tGrad;
       ctx.fill();
+      ctx.strokeStyle = 'rgba(187, 247, 208, 0.7)';
+      ctx.lineWidth = 1.2;
       ctx.stroke();
     }
 
     ctx.restore();
+  }
+
+  private generateOrganicEllipsePoints(
+    halfW: number,
+    halfL: number,
+    segs: number,
+    organicAmp: number = 0.08,
+    phase: number = 1.0
+  ): { x: number; z: number }[] {
+    const pts: { x: number; z: number }[] = [];
+    for (let i = 0; i < segs; i++) {
+      const theta = (i / segs) * Math.PI * 2;
+      const k =
+        1.0 +
+        organicAmp * Math.sin(theta * 2 + phase) +
+        organicAmp * 0.55 * Math.cos(theta * 3 - phase * 1.4);
+      pts.push({
+        x: Math.cos(theta) * halfW * k,
+        z: Math.sin(theta) * halfL * k
+      });
+    }
+    return pts;
   }
 
   private generateEllipsePoints(halfW: number, halfL: number, segs: number): { x: number; z: number }[] {

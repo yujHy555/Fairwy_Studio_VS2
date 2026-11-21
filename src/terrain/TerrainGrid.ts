@@ -139,6 +139,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
   public featColorTex: BaseTexture | null = null;
   public featNormalTex: BaseTexture | null = null;
   public featRoughTex: BaseTexture | null = null;
+  public neutralRoughTex: RawTexture | null = null;
+  public neutralNormalTex: RawTexture | null = null;
   public satelliteOverlayTex: BaseTexture | null = null;
   public tracedSdfTex: BaseTexture | null = null;
 
@@ -150,6 +152,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
   public tracedFringeIds: [number, number, number, number] = [0, 0, 0, 0];
   public tracedCollarW: [number, number, number, number] = [1.8, 1.65, 1.2, 2.15];
   public tracedShowCollar: [number, number, number, number] = [1, 1, 1, 1];
+  public tracedFairwayStripes: [number, number, number, number] = [1, 4.6, 0.5, 0];
+  public tracedGreenStripes: [number, number, number, number] = [1, 1.8, 0.45, 0];
 
   public groundBaseColor: Color3 = Color3.FromHexString('#4c7426');
   public groundColorTexLevel: number = 1.0;
@@ -188,6 +192,27 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
     super(material, 'BunkerGrassExclusion', 100, { BUNKER_MASK: true });
     this._enable(true);
     patchBumpShaders();
+    const scene = material.getScene();
+    if (scene) {
+      const roughData = new Uint8Array(4 * 4 * 4);
+      const normData = new Uint8Array(4 * 4 * 4);
+      for (let i = 0; i < 16; i++) {
+        roughData[i * 4 + 0] = 204;
+        roughData[i * 4 + 1] = 204;
+        roughData[i * 4 + 2] = 204;
+        roughData[i * 4 + 3] = 255;
+        normData[i * 4 + 0] = 128;
+        normData[i * 4 + 1] = 128;
+        normData[i * 4 + 2] = 255;
+        normData[i * 4 + 3] = 255;
+      }
+      this.neutralRoughTex = RawTexture.CreateRGBATexture(roughData, 4, 4, scene, false, false, Texture.BILINEAR_SAMPLINGMODE);
+      this.neutralRoughTex.wrapU = Texture.WRAP_ADDRESSMODE;
+      this.neutralRoughTex.wrapV = Texture.WRAP_ADDRESSMODE;
+      this.neutralNormalTex = RawTexture.CreateRGBATexture(normData, 4, 4, scene, false, false, Texture.BILINEAR_SAMPLINGMODE);
+      this.neutralNormalTex.wrapU = Texture.WRAP_ADDRESSMODE;
+      this.neutralNormalTex.wrapV = Texture.WRAP_ADDRESSMODE;
+    }
   }
 
   prepareDefines(defines: MaterialDefines) {
@@ -268,7 +293,9 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
         { name: 'uTracedSurfIds', size: 4, type: 'vec4' },
         { name: 'uTracedFringeIds', size: 4, type: 'vec4' },
         { name: 'uTracedCollarW', size: 4, type: 'vec4' },
-        { name: 'uTracedShowCollar', size: 4, type: 'vec4' }
+        { name: 'uTracedShowCollar', size: 4, type: 'vec4' },
+        { name: 'uTracedFairwayStripes', size: 4, type: 'vec4' },
+        { name: 'uTracedGreenStripes', size: 4, type: 'vec4' }
       ]
     };
   }
@@ -344,7 +371,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
     const safeGroundTex = this.pickReadyTex(this.groundColorTex, this.fallbackSplatTex);
     if (safeGroundTex) uniformBuffer.setTexture('groundColorSampler', safeGroundTex);
 
-    const safeRoughTex = this.pickReadyTex(this.groundRoughTex, this.fallbackSplatTex);
+    const safeRoughTex = this.pickReadyTex(this.groundRoughTex, this.neutralRoughTex);
     if (safeRoughTex) uniformBuffer.setTexture('groundRoughSampler', safeRoughTex);
 
     const maskTex = this.pickReadyTex(this.surfaceMaskTex, this.fallbackSplatTex);
@@ -362,10 +389,10 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
     const fColTex = this.pickReadyTex(this.featColorTex, safeGroundTex);
     if (fColTex) uniformBuffer.setTexture('featColorSampler', fColTex);
 
-    const fNormTex = this.pickReadyTex(this.featNormalTex, this.fallbackSplatTex);
+    const fNormTex = this.pickReadyTex(this.featNormalTex, this.neutralNormalTex);
     if (fNormTex) uniformBuffer.setTexture('featNormalSampler', fNormTex);
 
-    const fRoughTex = this.pickReadyTex(this.featRoughTex, this.fallbackSplatTex);
+    const fRoughTex = this.pickReadyTex(this.featRoughTex, this.neutralRoughTex);
     if (fRoughTex) uniformBuffer.setTexture('featRoughSampler', fRoughTex);
 
     uniformBuffer.updateFloat4(
@@ -403,6 +430,20 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
       this.tracedShowCollar[1],
       this.tracedShowCollar[2],
       this.tracedShowCollar[3]
+    );
+    uniformBuffer.updateFloat4(
+      'uTracedFairwayStripes',
+      this.tracedFairwayStripes[0],
+      this.tracedFairwayStripes[1],
+      this.tracedFairwayStripes[2],
+      this.tracedFairwayStripes[3]
+    );
+    uniformBuffer.updateFloat4(
+      'uTracedGreenStripes',
+      this.tracedGreenStripes[0],
+      this.tracedGreenStripes[1],
+      this.tracedGreenStripes[2],
+      this.tracedGreenStripes[3]
     );
 
     const satTex = this.pickReadyTex(this.satelliteOverlayTex, this.fallbackSplatTex);
@@ -521,8 +562,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outNormal = normLvl > 0.001
                 ? normalize(terrainTBN * normalize(vec3(normRaw.xy * normLvl, max(0.55, normRaw.z))))
                 : geomN;
-              float smoothRough = mix(0.78, roughRaw, 0.32);
-              outRough = lpMat.y < -0.05 ? 0.14 : clamp(smoothRough * lpMat.y, 0.0, 1.0);
+              float smoothRough = outColorMix < 0.01 ? 1.0 : mix(0.84, roughRaw, 0.18);
+              outRough = lpMat.y < -0.05 ? 0.14 : clamp(smoothRough * lpMat.y, 0.04, 1.0);
               outMetallic = clamp(lpExtra.x, 0.0, 1.0);
               outBaseColor = lpExtra.yzw;
             }
@@ -862,6 +903,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               float fringeLid,
               float collarW,
               float showCol,
+              vec4 stripeParams,
               vec2 baseUv,
               mat3 tbn,
               vec3 geomN,
@@ -880,7 +922,22 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
               vec3 sTex; float sMix; vec3 sNorm; float sR; float sM; vec3 sBase;
               evalSingleLayer(surfLid, baseUv, tbn, geomN, slopeSafe, sTex, sMix, sNorm, sR, sM, sBase);
-              vec3 sCol = mix(sBase, sTex, sMix) * vTint;
+              vec3 sCol = mix(sBase, sTex, sMix);
+              if (stripeParams.x > 0.5 && stripeParams.y > 0.05 && stripeParams.z > 0.001) {
+                float wx = baseUv.x * uTeeMeta.y;
+                float wz = baseUv.y * uTeeMeta.z;
+                float cosS = cos(stripeParams.w);
+                float sinS = sin(stripeParams.w);
+                float stripeCoord = wx * sinS + wz * cosS;
+                float sPhase = stripeCoord / max(0.25, stripeParams.y);
+                float sSide = smoothstep(-0.18, 0.18, sin(sPhase * 3.14159265));
+                float opLight = 0.02 + 0.14 * stripeParams.z;
+                float opDark  = 0.02 + 0.13 * stripeParams.z;
+                vec3 lightTint = mix(sCol, vec3(0.882, 1.0, 0.725), opLight);
+                vec3 darkTint  = mix(sCol, vec3(0.039, 0.149, 0.039), opDark);
+                sCol = mix(darkTint, lightTint, sSide);
+              }
+              sCol *= vTint;
 
               if (effColW > 0.05 && fringeLid > 0.5) {
                 vec3 fTex; float fMix; vec3 fNorm; float fR; float fM; vec3 fBase;
@@ -1011,8 +1068,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             vec3 layerNorm;
             float layerRoughUnused;
             float layerMetUnused;
-            vec3 layerBaseUnused;
-            evalSingleLayer(id00, vRawTerrainUV, terrainTBN, geomN, slopeSafe, layerTexRgb, layerColMix, layerNorm, layerRoughUnused, layerMetUnused, layerBaseUnused);
+            vec3 layerBase;
+            evalSingleLayer(id00, vRawTerrainUV, terrainTBN, geomN, slopeSafe, layerTexRgb, layerColMix, layerNorm, layerRoughUnused, layerMetUnused, layerBase);
 
             // Smooth bilinear blend across any sub-layer border (e.g. Tee Turf -> Fringe -> First Cut)
             if (abs(id00 - id10) + abs(id00 - id01) + abs(id00 - id11) > 0.5) {
@@ -1032,25 +1089,33 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               vec3 normB;
               float roughBUnused;
               float metBUnused;
-              vec3 baseBUnused;
-              evalSingleLayer(idB, vRawTerrainUV, terrainTBN, geomN, slopeSafe, texB, mixB, normB, roughBUnused, metBUnused, baseBUnused);
+              vec3 baseB;
+              evalSingleLayer(idB, vRawTerrainUV, terrainTBN, geomN, slopeSafe, texB, mixB, normB, roughBUnused, metBUnused, baseB);
 
               layerTexRgb = mix(texB, layerTexRgb, wA);
               layerColMix = mix(mixB, layerColMix, wA);
               layerNorm = normalize(mix(normB, layerNorm, wA));
+              layerBase = mix(baseB, layerBase, wA);
             }
 
             #if defined(VERTEXCOLOR) || defined(VERTEXALPHA)
               layerTexRgb *= vColor.rgb;
+              vec3 refBase = max(vec3(0.08), layerBase * vColor.rgb);
+            #else
+              vec3 refBase = max(vec3(0.08), layerBase);
             #endif
 
-            vec3 featureColor = mix(pureSplat.rgb, layerTexRgb, layerColMix);
+            // Preserve fairway mowing stripe modulation cleanly even when full PBR grass texture is active!
+            float splatLum = dot(pureSplat.rgb, vec3(0.299, 0.587, 0.114));
+            float baseLum = max(0.06, dot(refBase, vec3(0.299, 0.587, 0.114)));
+            float stripeFactor = clamp(splatLum / baseLum, 0.72, 1.32);
+            vec3 featureColor = mix(pureSplat.rgb, layerTexRgb * stripeFactor, layerColMix);
             float featureBlend = clamp((pureSplat.a - 0.52) / 0.48, 0.0, 1.0);
 
             vec3 hostTerrainColor = mix(mainGroundColor, featureColor, featureBlend);
             vec3 hostNormal = normalize(mix(groundN, layerNorm, featureBlend));
 
-            // Layer 0a-traced: Traced MapNG Fairways (RGBA8 linear-filtered GPU SDF)
+            // Layer 0a-traced: Traced MapNG Fairways (RGBA8 linear-filtered GPU SDF + live mowing stripes)
             if (uTracedMeta.x > 0.5 && uTracedSurfIds.x > 0.5) {
               applyTracedLayerCol(
                 dTraced.r,
@@ -1058,6 +1123,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 uTracedFringeIds.x,
                 uTracedCollarW.x,
                 uTracedShowCollar.x,
+                uTracedFairwayStripes,
                 vRawTerrainUV,
                 terrainTBN,
                 geomN,
@@ -1208,6 +1274,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 uTracedFringeIds.y,
                 uTracedCollarW.y,
                 uTracedShowCollar.y,
+                uTracedGreenStripes,
                 vRawTerrainUV,
                 terrainTBN,
                 geomN,
@@ -1270,6 +1337,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 uTracedFringeIds.w,
                 uTracedCollarW.w,
                 uTracedShowCollar.w,
+                vec4(0.0),
                 vRawTerrainUV,
                 terrainTBN,
                 geomN,
@@ -1325,6 +1393,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 uTracedFringeIds.z,
                 uTracedCollarW.z,
                 uTracedShowCollar.z,
+                vec4(0.0),
                 vRawTerrainUV,
                 terrainTBN,
                 geomN,
@@ -3339,6 +3408,22 @@ export class TerrainGrid {
       plugin.tracedCollarW[ch] = collarW;
       plugin.tracedShowCollar[ch] = showCollar ? 1 : 0;
 
+      if (feat.surfaceType === SurfaceType.FAIRWAY) {
+        plugin.tracedFairwayStripes = [
+          surfMat.showMowingStripes !== false ? 1.0 : 0.0,
+          surfMat.mowingStripeWidth ?? 4.6,
+          surfMat.mowingStripeContrast !== undefined ? surfMat.mowingStripeContrast : 0.5,
+          feat.rotationRad || 0
+        ];
+      } else if (feat.surfaceType === SurfaceType.GREEN) {
+        plugin.tracedGreenStripes = [
+          surfMat.showMowingStripes !== false ? 1.0 : 0.0,
+          surfMat.mowingStripeWidth ?? 1.8,
+          surfMat.mowingStripeContrast !== undefined ? surfMat.mowingStripeContrast : 0.45,
+          feat.rotationRad || 0
+        ];
+      }
+
       const b = computePolygonBounds(feat.contour);
       tracedItems.push({
         featIdx,
@@ -5018,7 +5103,27 @@ export class TerrainGrid {
           this.rebuildMesh(false);
         }
       } else {
+        if (feat.contour && feat.contour.length >= 3 && this.groundShaderPlugin) {
+          const sMat = this.getFeatureSubMaterialSettings(index, 'surface');
+          if (feat.surfaceType === SurfaceType.FAIRWAY) {
+            this.groundShaderPlugin.tracedFairwayStripes = [
+              sMat.showMowingStripes !== false ? 1.0 : 0.0,
+              sMat.mowingStripeWidth ?? 4.6,
+              sMat.mowingStripeContrast !== undefined ? sMat.mowingStripeContrast : 0.5,
+              feat.rotationRad || 0
+            ];
+          }
+        }
         this.redrawSplatTexture();
+      }
+      if (feat.contour && feat.contour.length >= 3 && feat.surfaceType === SurfaceType.GREEN && this.groundShaderPlugin) {
+        const sMat = this.getFeatureSubMaterialSettings(index, 'surface');
+        this.groundShaderPlugin.tracedGreenStripes = [
+          sMat.showMowingStripes !== false ? 1.0 : 0.0,
+          sMat.mowingStripeWidth ?? 1.8,
+          sMat.mowingStripeContrast !== undefined ? sMat.mowingStripeContrast : 0.45,
+          feat.rotationRad || 0
+        ];
       }
     }
   }
@@ -6792,16 +6897,25 @@ export class TerrainGrid {
       '#38b000', fairwayMat, surfId, 0, 0
     );
 
-    // 3. Championship Mowing Stripes clipped cleanly inside the organic fairway contour
+    // 3. Championship Mowing Stripes clipped cleanly inside the organic fairway contour (using actual bounds)
     const stripeMeters = fairwayMat.mowingStripeWidth ?? 4.6;
     const contrast = fairwayMat.mowingStripeContrast !== undefined ? fairwayMat.mowingStripeContrast : 0.5;
     if (fairwayMat.showMowingStripes !== false && stripeMeters > 0.05 && contrast > 0.001) {
+      let minFx = Infinity, maxFx = -Infinity, minFz = Infinity, maxFz = -Infinity;
+      for (const p of fairwayLoopMeters) {
+        if (p.x < minFx) minFx = p.x;
+        if (p.x > maxFx) maxFx = p.x;
+        if (p.z < minFz) minFz = p.z;
+        if (p.z > maxFz) maxFz = p.z;
+      }
+      const spanZ = Math.max(10, (maxFz - minFz) + 8);
+      const spanX = Math.max(10, (maxFx - minFx) + 8);
       const stripeStepMeters = Math.max(0.25, stripeMeters);
       const stripeStep = stripeStepMeters * sZ;
-      const bandCount = Math.ceil((325 * sZ) / stripeStep);
+      const bandCount = Math.ceil(spanZ / stripeStepMeters) + 2;
       this.drawClippedMowingStripes(
         ctx, fairwayLoopMeters, 0, 0, 0, sX, sZ,
-        'z', 45 * sZ, stripeStep, bandCount, 0, 220 * sX, contrast
+        'z', (minFz - 4) * sZ, stripeStep, bandCount, (minFx - 4) * sX, spanX * sX, contrast
       );
     }
   }

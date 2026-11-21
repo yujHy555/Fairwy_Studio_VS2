@@ -753,7 +753,7 @@ export class UIController {
                 <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
                 <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Click to aim shot • Drag to measure distance • Double-click to clear"></canvas>
               </div>
-              <canvas id="overhead-hole-canvas" width="456" height="480"></canvas>
+              <canvas id="overhead-hole-canvas" width="516" height="540"></canvas>
             </div>
 
             <!-- Yardage Readout & Elevation Delta Footer -->
@@ -1645,8 +1645,12 @@ export class UIController {
                 <input type="range" id="input-hdri-intensity" min="0.1" max="2.5" step="0.05" value="0.65" />
               </div>
               <div class="dock-slider-row">
-                <label>HDRI Texture UV Scale <span id="val-hdri-uv-scale">1.00</span></label>
+                <label>HDRI UV Scale (Width) <span id="val-hdri-uv-scale">1.00</span></label>
                 <input type="range" id="input-hdri-uv-scale" min="0.05" max="10.0" step="0.05" value="1.0" />
+              </div>
+              <div class="dock-slider-row">
+                <label>HDRI UV Scale (Height) <span id="val-hdri-uv-scale-v">1.00</span></label>
+                <input type="range" id="input-hdri-uv-scale-v" min="0.10" max="4.0" step="0.05" value="1.0" />
               </div>
               <div class="dock-slider-row">
                 <label>UV Offset (Width) <span id="val-hdri-uv-offset-u">0.00</span></label>
@@ -1684,8 +1688,49 @@ export class UIController {
                 </div>
               </div>
               <div class="dock-slider-row">
-                <label>Shadow Darkness <span id="val-shadow-darkness">0.22</span></label>
-                <input type="range" id="input-shadow-darkness" min="0.0" max="0.75" step="0.02" value="0.22" />
+                <label>Shadow Darkness <span id="val-shadow-darkness">0.72</span></label>
+                <input type="range" id="input-shadow-darkness" min="0.0" max="1.0" step="0.02" value="0.72" />
+              </div>
+            </div>
+
+            <div class="dock-vertical-divider"></div>
+
+            <div class="lighting-controls-col">
+              <div class="dock-subhead">
+                <span>POST-PROCESSING</span>
+                <span class="dock-subtag">Half-Res GPU</span>
+              </div>
+              <label class="dock-check-row" title="Enable half-resolution optimized HDR Bloom">
+                <input type="checkbox" id="chk-pp-bloom" />
+                <span>Bloom Effect</span>
+              </label>
+              <div class="dock-slider-row">
+                <label>Bloom Intensity <span id="val-pp-bloom-weight">0.32</span></label>
+                <input type="range" id="input-pp-bloom-weight" min="0.0" max="1.5" step="0.02" value="0.32" />
+              </div>
+              <div class="dock-slider-row">
+                <label>Bloom Threshold <span id="val-pp-bloom-thresh">0.85</span></label>
+                <input type="range" id="input-pp-bloom-thresh" min="0.1" max="1.5" step="0.02" value="0.85" />
+              </div>
+              <div class="dock-slider-row">
+                <label>Bloom Spread <span id="val-pp-bloom-kernel">48</span></label>
+                <input type="range" id="input-pp-bloom-kernel" min="16" max="128" step="4" value="48" />
+              </div>
+              <label class="dock-check-row" title="Enable next-gen half-res cinema anamorphic lens flare">
+                <input type="checkbox" id="chk-pp-anamorphic" />
+                <span>Anamorphic Flare</span>
+              </label>
+              <div class="dock-slider-row">
+                <label>Flare Intensity <span id="val-pp-ana-intensity">0.55</span></label>
+                <input type="range" id="input-pp-ana-intensity" min="0.0" max="2.0" step="0.05" value="0.55" />
+              </div>
+              <div class="dock-slider-row">
+                <label>Flare Threshold <span id="val-pp-ana-thresh">0.82</span></label>
+                <input type="range" id="input-pp-ana-thresh" min="0.2" max="1.6" step="0.02" value="0.82" />
+              </div>
+              <div class="dock-slider-row">
+                <label>Flare Stretch <span id="val-pp-ana-stretch">1.10</span></label>
+                <input type="range" id="input-pp-ana-stretch" min="0.2" max="2.5" step="0.05" value="1.10" />
               </div>
             </div>
           </div>
@@ -3312,6 +3357,14 @@ export class UIController {
       this.callbacks.onEnvironmentChange?.({ hdriScaleU: v, hdriScaleV: v });
     });
 
+    const hdriScaleVInput = document.getElementById('input-hdri-uv-scale-v') as HTMLInputElement | null;
+    const valHdriScaleV = document.getElementById('val-hdri-uv-scale-v');
+    hdriScaleVInput?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valHdriScaleV) valHdriScaleV.innerText = v.toFixed(2);
+      this.callbacks.onEnvironmentChange?.({ hdriScaleV: v });
+    });
+
     const hdriOffUInput = document.getElementById('input-hdri-uv-offset-u') as HTMLInputElement | null;
     const valHdriOffU = document.getElementById('val-hdri-uv-offset-u');
     hdriOffUInput?.addEventListener('input', (e) => {
@@ -3368,6 +3421,59 @@ export class UIController {
       const v = Number((e.target as HTMLInputElement).value);
       if (valShadowDark) valShadowDark.innerText = v.toFixed(2);
       this.callbacks.onEnvironmentChange?.({ shadowDarkness: v });
+    });
+
+    // Post-Processing Controls Listeners (Bloom & Anamorphic Flare)
+    const chkBloom = document.getElementById('chk-pp-bloom') as HTMLInputElement | null;
+    chkBloom?.addEventListener('change', () => {
+      this.callbacks.onEnvironmentChange?.({ bloomEnabled: chkBloom.checked });
+    });
+    const bloomWeightIn = document.getElementById('input-pp-bloom-weight') as HTMLInputElement | null;
+    const valBloomWeight = document.getElementById('val-pp-bloom-weight');
+    bloomWeightIn?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valBloomWeight) valBloomWeight.innerText = v.toFixed(2);
+      this.callbacks.onEnvironmentChange?.({ bloomWeight: v });
+    });
+    const bloomThreshIn = document.getElementById('input-pp-bloom-thresh') as HTMLInputElement | null;
+    const valBloomThresh = document.getElementById('val-pp-bloom-thresh');
+    bloomThreshIn?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valBloomThresh) valBloomThresh.innerText = v.toFixed(2);
+      this.callbacks.onEnvironmentChange?.({ bloomThreshold: v });
+    });
+    const bloomKernelIn = document.getElementById('input-pp-bloom-kernel') as HTMLInputElement | null;
+    const valBloomKernel = document.getElementById('val-pp-bloom-kernel');
+    bloomKernelIn?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valBloomKernel) valBloomKernel.innerText = String(Math.round(v));
+      this.callbacks.onEnvironmentChange?.({ bloomKernel: v });
+    });
+
+    const chkAna = document.getElementById('chk-pp-anamorphic') as HTMLInputElement | null;
+    chkAna?.addEventListener('change', () => {
+      this.callbacks.onEnvironmentChange?.({ anamorphicEnabled: chkAna.checked });
+    });
+    const anaIntIn = document.getElementById('input-pp-ana-intensity') as HTMLInputElement | null;
+    const valAnaInt = document.getElementById('val-pp-ana-intensity');
+    anaIntIn?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valAnaInt) valAnaInt.innerText = v.toFixed(2);
+      this.callbacks.onEnvironmentChange?.({ anamorphicIntensity: v });
+    });
+    const anaThreshIn = document.getElementById('input-pp-ana-thresh') as HTMLInputElement | null;
+    const valAnaThresh = document.getElementById('val-pp-ana-thresh');
+    anaThreshIn?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valAnaThresh) valAnaThresh.innerText = v.toFixed(2);
+      this.callbacks.onEnvironmentChange?.({ anamorphicThreshold: v });
+    });
+    const anaStretchIn = document.getElementById('input-pp-ana-stretch') as HTMLInputElement | null;
+    const valAnaStretch = document.getElementById('val-pp-ana-stretch');
+    anaStretchIn?.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (valAnaStretch) valAnaStretch.innerText = v.toFixed(2);
+      this.callbacks.onEnvironmentChange?.({ anamorphicStretch: v });
     });
 
     // Delete Feature in Developer Zone
@@ -5374,6 +5480,13 @@ export class UIController {
       if (valScale) valScale.innerText = env.hdriScaleU.toFixed(2);
     }
 
+    const scaleVInput = document.getElementById('input-hdri-uv-scale-v') as HTMLInputElement | null;
+    const valScaleV = document.getElementById('val-hdri-uv-scale-v');
+    if (scaleVInput && env.hdriScaleV !== undefined) {
+      scaleVInput.value = String(env.hdriScaleV);
+      if (valScaleV) valScaleV.innerText = env.hdriScaleV.toFixed(2);
+    }
+
     const offUInput = document.getElementById('input-hdri-uv-offset-u') as HTMLInputElement | null;
     const valOffU = document.getElementById('val-hdri-uv-offset-u');
     if (offUInput && env.hdriOffsetU !== undefined) {
@@ -5421,6 +5534,48 @@ export class UIController {
     if (shadowDark && env.shadowDarkness !== undefined) {
       shadowDark.value = String(env.shadowDarkness);
       if (valShadowDark) valShadowDark.innerText = env.shadowDarkness.toFixed(2);
+    }
+
+    const chkBloom = document.getElementById('chk-pp-bloom') as HTMLInputElement | null;
+    if (chkBloom && env.bloomEnabled !== undefined) chkBloom.checked = env.bloomEnabled;
+    const bloomW = document.getElementById('input-pp-bloom-weight') as HTMLInputElement | null;
+    const valBloomW = document.getElementById('val-pp-bloom-weight');
+    if (bloomW && env.bloomWeight !== undefined) {
+      bloomW.value = String(env.bloomWeight);
+      if (valBloomW) valBloomW.innerText = env.bloomWeight.toFixed(2);
+    }
+    const bloomT = document.getElementById('input-pp-bloom-thresh') as HTMLInputElement | null;
+    const valBloomT = document.getElementById('val-pp-bloom-thresh');
+    if (bloomT && env.bloomThreshold !== undefined) {
+      bloomT.value = String(env.bloomThreshold);
+      if (valBloomT) valBloomT.innerText = env.bloomThreshold.toFixed(2);
+    }
+    const bloomK = document.getElementById('input-pp-bloom-kernel') as HTMLInputElement | null;
+    const valBloomK = document.getElementById('val-pp-bloom-kernel');
+    if (bloomK && env.bloomKernel !== undefined) {
+      bloomK.value = String(env.bloomKernel);
+      if (valBloomK) valBloomK.innerText = String(Math.round(env.bloomKernel));
+    }
+
+    const chkAna = document.getElementById('chk-pp-anamorphic') as HTMLInputElement | null;
+    if (chkAna && env.anamorphicEnabled !== undefined) chkAna.checked = env.anamorphicEnabled;
+    const anaInt = document.getElementById('input-pp-ana-intensity') as HTMLInputElement | null;
+    const valAnaInt = document.getElementById('val-pp-ana-intensity');
+    if (anaInt && env.anamorphicIntensity !== undefined) {
+      anaInt.value = String(env.anamorphicIntensity);
+      if (valAnaInt) valAnaInt.innerText = env.anamorphicIntensity.toFixed(2);
+    }
+    const anaThresh = document.getElementById('input-pp-ana-thresh') as HTMLInputElement | null;
+    const valAnaThresh = document.getElementById('val-pp-ana-thresh');
+    if (anaThresh && env.anamorphicThreshold !== undefined) {
+      anaThresh.value = String(env.anamorphicThreshold);
+      if (valAnaThresh) valAnaThresh.innerText = env.anamorphicThreshold.toFixed(2);
+    }
+    const anaStretch = document.getElementById('input-pp-ana-stretch') as HTMLInputElement | null;
+    const valAnaStretch = document.getElementById('val-pp-ana-stretch');
+    if (anaStretch && env.anamorphicStretch !== undefined) {
+      anaStretch.value = String(env.anamorphicStretch);
+      if (valAnaStretch) valAnaStretch.innerText = env.anamorphicStretch.toFixed(2);
     }
   }
 
