@@ -54,9 +54,9 @@ export class CameraController {
       pointersInput.multiTouchPanning = true;
     }
 
-    // Near/Far planes tuned for maximum depth buffer precision and long-distance course visibility
+    // Near/Far planes tuned for maximum depth buffer precision and unlimited Designer zoom-out visibility
     this.camera.minZ = 0.50;
-    this.camera.maxZ = 16000;
+    this.camera.maxZ = 50000;
 
     // Remove default keyboard rotation on ArcRotateCamera so we can provide smooth WASD ground-gliding
     this.camera.keysUp = [];
@@ -107,11 +107,11 @@ export class CameraController {
       const panScale = r * 0.0022;
 
       if (e.ctrlKey) {
-        this.camera.target.y = Math.max(-50, Math.min(250, this.camera.target.y - dy * panScale));
+        this.camera.target.y -= dy * panScale;
         return;
       }
 
-      // Ground-plane grab-and-pull panning along camera-relative XZ axes
+      // Unrestricted ground-plane grab-and-pull panning along camera-relative XZ axes
       const cosAlpha = Math.cos(this.camera.alpha);
       const sinAlpha = Math.sin(this.camera.alpha);
       const grabRightX = sinAlpha;
@@ -122,8 +122,8 @@ export class CameraController {
       const moveX = (dx * grabRightX + dy * forwardX) * panScale;
       const moveZ = (dx * grabRightZ + dy * forwardZ) * panScale;
 
-      this.camera.target.x = Math.max(this.designerMinX, Math.min(this.designerMaxX, this.camera.target.x + moveX));
-      this.camera.target.z = Math.max(this.designerMinZ, Math.min(this.designerMaxZ, this.camera.target.z + moveZ));
+      this.camera.target.x += moveX;
+      this.camera.target.z += moveZ;
     });
 
     window.addEventListener('pointerup', (e) => {
@@ -142,18 +142,23 @@ export class CameraController {
     }, { passive: false });
 
     window.addEventListener('keydown', (e) => {
+      const tag = (document.activeElement?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       this.keysPressed.add(e.code);
     });
     window.addEventListener('keyup', (e) => {
       this.keysPressed.delete(e.code);
     });
+    window.addEventListener('blur', () => {
+      this.keysPressed.clear();
+    });
 
-    // Industry-standard Designer navigation constraints: distance-proportional zoom & custom ground-plane pan
-    this.camera.lowerBetaLimit = 0.05;
-    this.camera.upperBetaLimit = Math.PI / 2.02;
-    this.camera.lowerRadiusLimit = 1.2;
-    this.camera.upperRadiusLimit = this.designerMaxRadius;
-    this.camera.wheelDeltaPercentage = 0.032;
+    // Unrestricted Designer navigation: full 3D orbit, unlimited zoom range & free ground-plane pan
+    this.camera.lowerBetaLimit = 0.01;
+    this.camera.upperBetaLimit = Math.PI - 0.05;
+    this.camera.lowerRadiusLimit = 0.25;
+    this.camera.upperRadiusLimit = null;
+    this.camera.wheelDeltaPercentage = 0.04;
     this.camera.wheelPrecision = 0;
     this.camera.inertia = 0.65;
     this.camera.panningInertia = 0;
@@ -165,11 +170,11 @@ export class CameraController {
 
   private applyCameraConstraints() {
     if (this.mode === 'designer') {
-      this.camera.lowerBetaLimit = 0.05;
-      this.camera.upperBetaLimit = Math.PI / 2.02;
-      this.camera.lowerRadiusLimit = 1.2;
-      this.camera.upperRadiusLimit = this.designerMaxRadius;
-      this.camera.wheelDeltaPercentage = 0.032;
+      this.camera.lowerBetaLimit = 0.01;
+      this.camera.upperBetaLimit = Math.PI - 0.05;
+      this.camera.lowerRadiusLimit = 0.25;
+      this.camera.upperRadiusLimit = null;
+      this.camera.wheelDeltaPercentage = 0.04;
       this.camera.wheelPrecision = 0;
       this.camera.panningSensibility = 0;
       return;
@@ -210,6 +215,7 @@ export class CameraController {
   }
 
   public setMode(mode: CameraMode) {
+    const prevMode = this.mode;
     this.mode = mode;
 
     // Keep LMB (0) for pure Orbit across all modes
@@ -219,8 +225,10 @@ export class CameraController {
     }
 
     if (mode === 'designer') {
-      this.camera.radius = 85;
-      this.camera.beta = Math.PI / 3.2;
+      if (prevMode !== 'designer') {
+        this.camera.radius = 85;
+        this.camera.beta = Math.PI / 3.2;
+      }
     } else if (mode === 'aim') {
       // Default start ball view: pulled back 5.4m
       this.lockedPlayRadius = 5.4;
@@ -308,9 +316,9 @@ export class CameraController {
       this.camera.inertialRadiusOffset = 0;
     }
 
-    const r = Math.max(1.2, this.camera.radius);
+    const r = Math.max(0.25, this.camera.radius);
 
-    // 1. Smooth WASD / Arrow key course gliding ONLY in Designer Mode
+    // 1. Free Designer camera gliding without boundary/terrain clamps or collision pushback
     if (this.mode === 'designer') {
       if (this.isShiftPanning) {
         this.camera.alpha = this.panStartAlpha;
@@ -346,24 +354,8 @@ export class CameraController {
 
       if (moveX !== 0 || moveZ !== 0) {
         const len = Math.sqrt(moveX * moveX + moveZ * moveZ) || 1;
-        this.camera.target.x = Math.max(this.designerMinX, Math.min(this.designerMaxX, this.camera.target.x + (moveX / len) * moveSpeed));
-        this.camera.target.z = Math.max(this.designerMinZ, Math.min(this.designerMaxZ, this.camera.target.z + (moveZ / len) * moveSpeed));
-      }
-
-      const targetGroundY = getWorldElevation(this.camera.target.x, this.camera.target.z);
-      if (this.camera.target.y < targetGroundY - 30) {
-        this.camera.target.y = targetGroundY - 30;
-      }
-
-      const sinBeta = Math.sin(this.camera.beta);
-      const camX = this.camera.target.x + r * sinBeta * Math.cos(this.camera.alpha);
-      const camZ = this.camera.target.z + r * sinBeta * Math.sin(this.camera.alpha);
-      const camGround = getWorldElevation(camX, camZ);
-      const currentCamY = this.camera.target.y + r * Math.cos(this.camera.beta);
-      const minCamY = camGround + 0.65;
-      if (currentCamY < minCamY && r > 0.01) {
-        const cosReq = Math.max(-0.98, Math.min(0.98, (minCamY - this.camera.target.y) / r));
-        this.camera.beta = Math.max(0.05, Math.min(this.camera.beta, Math.acos(cosReq)));
+        this.camera.target.x += (moveX / len) * moveSpeed;
+        this.camera.target.z += (moveZ / len) * moveSpeed;
       }
       return;
     }
@@ -474,26 +466,57 @@ export class CameraController {
     this.designerMaxX = maxX;
     this.designerMinZ = minZ;
     this.designerMaxZ = maxZ;
-    this.designerMaxRadius = Math.max(600, Math.min(2600, maxRadius));
-    this.camera.maxZ = Math.max(16000, this.designerMaxRadius * 6);
+    this.designerMaxRadius = Math.max(600, maxRadius);
+    this.camera.maxZ = Math.max(50000, this.designerMaxRadius * 12);
     if (this.mode === 'designer') {
       this.applyCameraConstraints();
     }
   }
 
-  public setCourseOverview3D(centerX: number, centerZ: number, spanMeters: number) {
-    this.camera.target.set(centerX, 6, centerZ);
-    this.camera.alpha = -Math.PI / 2;
-    this.camera.beta = 0.84; // ~48 deg isometric 3D overview matching MapNG preview
-    const desiredRadius = Math.max(260, Math.min(this.designerMaxRadius, spanMeters * 0.62));
-    this.camera.radius = desiredRadius;
+  public ensureDesignerCameraControl(canvas?: HTMLCanvasElement) {
+    this.mode = 'designer';
+    this.isPanningDown = false;
+    this.isShiftPanning = false;
+    this.isUserDragging = false;
+    this.camera.inertialAlphaOffset = 0;
+    this.camera.inertialBetaOffset = 0;
+    this.camera.inertialRadiusOffset = 0;
+    this.camera.maxZ = Math.max(50000, this.designerMaxRadius * 12);
+    if (canvas) {
+      this.camera.attachControl(canvas, true, false);
+    }
+    const pointersInput = (this.camera.inputs?.attached?.pointers as any);
+    if (pointersInput) {
+      pointersInput.buttons = [0];
+    }
+    this.applyCameraConstraints();
   }
 
-  public setTopDownView(centerX: number, centerZ: number) {
+  public setCourseOverview3D(centerX: number, centerZ: number, spanMeters: number, targetY = 6) {
+    if (this.mode === 'designer') {
+      this.applyCameraConstraints();
+    }
+    this.camera.target.set(centerX, targetY, centerZ);
+    this.camera.alpha = -Math.PI / 2;
+    this.camera.beta = 0.82; // ~47 deg isometric 3D overview matching MapNG preview
+    const desiredRadius = Math.max(320, spanMeters * 0.85);
+    this.camera.radius = desiredRadius;
+    this.camera.inertialAlphaOffset = 0;
+    this.camera.inertialBetaOffset = 0;
+    this.camera.inertialRadiusOffset = 0;
+  }
+
+  public setTopDownView(centerX: number, centerZ: number, spanMeters?: number) {
+    if (this.mode === 'designer') {
+      this.applyCameraConstraints();
+    }
     this.camera.target.set(centerX, 0, centerZ);
     this.camera.alpha = -Math.PI / 2;
     this.camera.beta = 0.05;
-    this.camera.radius = 160;
+    this.camera.radius = spanMeters ? Math.max(160, spanMeters * 0.85) : 160;
+    this.camera.inertialAlphaOffset = 0;
+    this.camera.inertialBetaOffset = 0;
+    this.camera.inertialRadiusOffset = 0;
   }
 
   /**
@@ -501,6 +524,9 @@ export class CameraController {
    * Sets the camera target to the object so all subsequent LMB orbit rotations pivot smoothly around it.
    */
   public frameOnTarget(targetPos: Vector3, radius?: number) {
+    if (this.mode === 'designer') {
+      this.applyCameraConstraints();
+    }
     this.camera.target.copyFrom(targetPos);
     if (radius !== undefined) {
       this.camera.radius = radius;
@@ -508,6 +534,7 @@ export class CameraController {
       this.camera.radius = Math.max(4.0, Math.min(75, this.camera.radius * 0.55));
     }
     this.camera.beta = Math.PI / 3.0;
+    this.camera.inertialRadiusOffset = 0;
   }
 
   public orbitBy(deltaYaw: number, deltaPitch: number) {

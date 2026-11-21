@@ -417,6 +417,14 @@ class FairwayStudioApp {
       }
     });
 
+    // Safety net: ensure trace node drag can never leave camera detached if pointerup happens off-canvas
+    window.addEventListener('pointerup', () => {
+      if (this.wasCameraDetachedForTrace) {
+        this.cameraCtrl.camera.attachControl(this.canvas, true, false);
+        this.wasCameraDetachedForTrace = false;
+      }
+    });
+
     // 10. Setup UI & Event Handlers
     this.setupUI();
     this.initGamepad();
@@ -941,8 +949,10 @@ class FairwayStudioApp {
     this.currentAimAzimuth = (Math.atan2(aimDx, aimDz) * 180) / Math.PI;
     this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
 
-    this.cameraCtrl.setMode('aim');
-    this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+    if (this.activeMode === 'play') {
+      this.cameraCtrl.setMode('aim');
+      this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+    }
 
     const dx = pin.x - tee.x;
     const dz = pin.z - tee.z;
@@ -1005,7 +1015,9 @@ class FairwayStudioApp {
         this.freezeStaticWorldMatrices(false);
         this.applyPlayModeCorridorCulling(false);
         this.activeMode = 'designer';
+        this.wasCameraDetachedForTrace = false;
         this.cameraCtrl.setMode('designer');
+        this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
         this.ui.setMode('designer');
         this.setViewportShadingMode(this.currentShadingMode, true);
         if (this.currentShadingMode === 'rendered') {
@@ -1033,7 +1045,9 @@ class FairwayStudioApp {
           this.freezeStaticWorldMatrices(false);
           this.applyPlayModeCorridorCulling(false);
           this.setViewportShadingMode(this.currentShadingMode, true);
+          this.wasCameraDetachedForTrace = false;
           this.cameraCtrl.setMode('designer');
+          this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
           if (this.currentShadingMode === 'rendered') {
             this.refreshShadowsAndMaterials(true);
           }
@@ -1191,10 +1205,16 @@ class FairwayStudioApp {
         this.applySatelliteImageOnly(img, fileName);
       },
       onCourseOverview3D: () => {
+        if (this.activeMode === 'designer') {
+          this.wasCameraDetachedForTrace = false;
+          this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
+        }
+        const centerY = this.terrain.getElevation(this.lastMapNGCourseCenter.x, this.lastMapNGCourseCenter.z);
         this.cameraCtrl.setCourseOverview3D(
           this.lastMapNGCourseCenter.x,
           this.lastMapNGCourseCenter.z,
-          this.lastMapNGCourseSpan
+          this.lastMapNGCourseSpan,
+          centerY
         );
         this.ui.showToast('🌍 Framed isolated golf course overview', 'info', 1800);
       },
@@ -1214,7 +1234,12 @@ class FairwayStudioApp {
         this.setSatelliteOverlayOpacity(opacity);
       },
       onTopDownTraceCam: () => {
-        this.cameraCtrl.setTopDownView(this.terrain.width * 0.5, this.terrain.length * 0.5);
+        if (this.activeMode === 'designer') {
+          this.wasCameraDetachedForTrace = false;
+          this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
+        }
+        const span = Math.max(this.terrain.width, this.terrain.length);
+        this.cameraCtrl.setTopDownView(this.terrain.width * 0.5, this.terrain.length * 0.5, span);
         this.ui.showToast('📐 Top-Down Tracing Camera Ready', 'info', 1800);
       },
       onTraceModeChange: (mode, surface) => {
@@ -1706,6 +1731,7 @@ class FairwayStudioApp {
         }
       },
       onCameraModeToggle: () => {
+        if (this.activeMode !== 'play') return;
         const current = this.cameraCtrl.mode;
         if (current === 'aim') {
           this.cameraCtrl.setMode('scout');
@@ -1957,8 +1983,10 @@ class FairwayStudioApp {
       this.ui.showToast('⚠️ OUT OF BOUNDS! 1 penalty stroke. Ball returned to previous lie.', 'warning');
       this.courseManager.recordStroke();
       this.ball.setPosition(this.ball.shotOrigin.x, this.ball.shotOrigin.y, this.ball.shotOrigin.z);
-      this.cameraCtrl.setMode('aim');
-      this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+      if (this.activeMode === 'play') {
+        this.cameraCtrl.setMode('aim');
+        this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+      }
       this.ui.setSwingEnabled(true);
       if (this.aimSystem) {
         this.aimSystem.setVisible(true);
@@ -2975,8 +3003,10 @@ class FairwayStudioApp {
     const startY = dropGroundY + dropHeight;
     this.ball.setPosition(dropX, startY, dropZ);
 
-    this.cameraCtrl.setMode('aim');
-    this.cameraCtrl.camera.target.set(dropX, dropGroundY + 0.45, dropZ);
+    if (this.activeMode === 'play') {
+      this.cameraCtrl.setMode('aim');
+      this.cameraCtrl.camera.target.set(dropX, dropGroundY + 0.45, dropZ);
+    }
 
     let currentY = startY;
     let velY = 0;
@@ -4623,6 +4653,7 @@ class FairwayStudioApp {
         }
       },
       onToggleCameraMode: () => {
+        if (this.activeMode !== 'play') return;
         const current = this.cameraCtrl.mode;
         if (current === 'aim') {
           this.cameraCtrl.setMode('scout');
@@ -5331,6 +5362,8 @@ class FairwayStudioApp {
         this.applyPlayModeCorridorCulling(true);
         this.placeBallAtActiveTee();
       } else {
+        this.wasCameraDetachedForTrace = false;
+        this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
         this.cameraCtrl.frameOnTarget(
           new Vector3(cx, this.terrain.getElevation(cx, cz), cz),
           Math.max(180, holeGuide.distances.yellow * 0.85)
@@ -5471,10 +5504,19 @@ class FairwayStudioApp {
         ...this.terrain.getGroundUvSettings(),
         satelliteMapName: this.lastSatelliteFileName || (unified.satelliteDataUrl ? 'mapng_satellite.jpg' : undefined)
       });
+      if (this.activeMode === 'designer') {
+        this.wasCameraDetachedForTrace = false;
+        this.cameraCtrl.ensureDesignerCameraControl(this.canvas);
+      }
+      const overviewCenterY = this.terrain.getElevation(
+        this.lastMapNGCourseCenter.x,
+        this.lastMapNGCourseCenter.z
+      );
       this.cameraCtrl.setCourseOverview3D(
         this.lastMapNGCourseCenter.x,
         this.lastMapNGCourseCenter.z,
-        this.lastMapNGCourseSpan
+        this.lastMapNGCourseSpan,
+        overviewCenterY
       );
       this.refreshShadowsAndMaterials(true);
       this.recordHistoryStep(snap.description, snap);
