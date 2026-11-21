@@ -43,8 +43,8 @@ export class CameraController {
       new Vector3(95, 8.0, 42),
       this.scene
     );
-    // Attach control with LMB (button 0) for smooth Orbiting
-    this.camera.attachControl(canvas, true, false);
+    // Attach control with LMB (button 0) for smooth Orbiting (noPreventDefault=false prevents browser drag interference)
+    this.camera.attachControl(canvas, false, false);
 
     const pointersInput = (this.camera.inputs?.attached?.pointers as any);
     if (pointersInput) {
@@ -126,12 +126,34 @@ export class CameraController {
       this.camera.target.z += moveZ;
     });
 
-    window.addEventListener('pointerup', (e) => {
+    const resetStuckPointers = () => {
       this.isUserDragging = false;
-      if (e.button === 0 || e.button === 1 || e.button === 2) {
+      this.isPanningDown = false;
+      this.isShiftPanning = false;
+      const pi = (this.camera.inputs?.attached?.pointers as any);
+      if (pi) {
+        pi._pointA = null;
+        pi._pointB = null;
+        pi._currentMousePointerIdDown = -1;
+      }
+    };
+
+    window.addEventListener('pointerup', (e) => {
+      if (e.buttons === 0) {
+        resetStuckPointers();
+      } else if (e.button === 0 || e.button === 1 || e.button === 2) {
         this.isPanningDown = false;
         this.isShiftPanning = false;
       }
+    });
+
+    window.addEventListener('pointercancel', () => {
+      resetStuckPointers();
+    });
+
+    window.addEventListener('blur', () => {
+      this.keysPressed.clear();
+      resetStuckPointers();
     });
 
     // Lock zoom wheel in Play Mode so orbit-around-ball stays fixed distance
@@ -148,9 +170,6 @@ export class CameraController {
     });
     window.addEventListener('keyup', (e) => {
       this.keysPressed.delete(e.code);
-    });
-    window.addEventListener('blur', () => {
-      this.keysPressed.clear();
     });
 
     // Unrestricted Designer navigation: full 3D orbit, unlimited zoom range & free ground-plane pan
@@ -482,12 +501,15 @@ export class CameraController {
     this.camera.inertialBetaOffset = 0;
     this.camera.inertialRadiusOffset = 0;
     this.camera.maxZ = Math.max(50000, this.designerMaxRadius * 12);
-    if (canvas) {
-      this.camera.attachControl(canvas, true, false);
+    if (canvas && !this.camera.inputs?.attachedToElement) {
+      this.camera.attachControl(canvas, false, false);
     }
     const pointersInput = (this.camera.inputs?.attached?.pointers as any);
     if (pointersInput) {
       pointersInput.buttons = [0];
+      pointersInput._pointA = null;
+      pointersInput._pointB = null;
+      pointersInput._currentMousePointerIdDown = -1;
     }
     this.applyCameraConstraints();
   }

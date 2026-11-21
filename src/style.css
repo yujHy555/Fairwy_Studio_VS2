@@ -21,6 +21,7 @@ html, body {
   height: 100vh;
   display: block;
   outline: none;
+  touch-action: none;
 }
 
 /* UI Overlay Root */

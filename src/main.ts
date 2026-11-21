@@ -330,7 +330,7 @@ class FairwayStudioApp {
     this.courseManager = new CourseManager(this.terrain, this.scenery, true);
     this.courseManager.onEnvironmentSettingsLoaded = (env) => {
       const urlChanged = !!(env.hdriUrl && env.hdriUrl !== this.currentEnvSettings.hdriUrl);
-      this.setHdriEnvironment(env, urlChanged);
+      this.setHdriEnvironment(env, urlChanged || Boolean(this.currentHdrTexture?.isReady()));
       this.refreshShadowsAndMaterials(true);
     };
     await this.courseManager.initWithPreloadedCourse(preloadedHoleJson);
@@ -411,7 +411,7 @@ class FairwayStudioApp {
         this.ui?.updateTraceUi(mode, targetSurface, pointCount);
         this.terrain.setSatelliteOverlayOverFeatures(mode !== 'off' ? 0.30 : 0.0);
         if (mode === 'off' && this.wasCameraDetachedForTrace) {
-          this.cameraCtrl.camera.attachControl(this.canvas, true, false);
+          this.cameraCtrl.camera.attachControl(this.canvas, false, false);
           this.wasCameraDetachedForTrace = false;
         }
       }
@@ -420,7 +420,7 @@ class FairwayStudioApp {
     // Safety net: ensure trace node drag can never leave camera detached if pointerup happens off-canvas
     window.addEventListener('pointerup', () => {
       if (this.wasCameraDetachedForTrace) {
-        this.cameraCtrl.camera.attachControl(this.canvas, true, false);
+        this.cameraCtrl.camera.attachControl(this.canvas, false, false);
         this.wasCameraDetachedForTrace = false;
       }
     });
@@ -523,10 +523,9 @@ class FairwayStudioApp {
   }
 
   private ensureHdriPreloading() {
-    if (!this.hdriPreloadStarted) {
-      this.hdriPreloadStarted = true;
-      this.preloadHdriPresets();
-    }
+    // Load HDRIs on-demand when selected instead of decoding/prefiltering 512px cubemaps
+    // on a background timer, which stalled the main thread and froze camera rotation.
+    this.hdriPreloadStarted = true;
   }
 
   private schedulePlayWorldFreeze() {
@@ -774,12 +773,28 @@ class FairwayStudioApp {
           false,
           true,
           () => {
+            const prevBlock = this.scene.blockMaterialDirtyMechanism;
+            if (prevBlock) this.scene.blockMaterialDirtyMechanism = false;
+            hdrTexture.coordinatesMode = Texture.CUBIC_MODE;
+            this.currentHdrTexture = hdrTexture;
+            this.scene.environmentTexture = hdrTexture;
+            this.scene.environmentIntensity = this.currentEnvSettings.hdriIntensity;
             const skyTex = this.getOrCreateSkyboxTexture(bootUrl, hdrTexture);
             if (this.skyboxMesh && this.skyboxMesh.material) {
-              (this.skyboxMesh.material as PBRMaterial).reflectionTexture = skyTex;
-              this.skyboxMesh.material.markAsDirty(Material.TextureDirtyFlag);
+              const skyMat = this.skyboxMesh.material as PBRMaterial;
+              skyMat.reflectionTexture = skyTex;
+              skyMat.microSurface = 1.0 - 0.03;
+              skyMat.disableLighting = true;
+              skyMat.twoSidedLighting = true;
+              skyMat.backFaceCulling = false;
+              skyMat.markAsDirty(Material.TextureDirtyFlag | Material.MiscDirtyFlag);
+              if (this.shadowGenerator) {
+                this.shadowGenerator.removeShadowCaster(this.skyboxMesh, true);
+              }
             }
             this.applyHdriTransform();
+            this.scene.markAllMaterialsAsDirty(Material.TextureDirtyFlag | Material.LightDirtyFlag);
+            if (prevBlock) this.scene.blockMaterialDirtyMechanism = true;
             clearTimeout(timer);
             finish();
           },
@@ -1000,7 +1015,13 @@ class FairwayStudioApp {
         this.placeBallAtActiveTee();
         this.cameraCtrl.setMode('aim');
         this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+        this.setHdriEnvironment(this.currentEnvSettings, true);
         this.refreshShadowsAndMaterials(true);
+        requestAnimationFrame(() => {
+          if (this.activeMode === 'play') {
+            this.refreshShadowsAndMaterials(false);
+          }
+        });
         this.updateHUDDisplay();
         this.updateDevStats();
         this.schedulePlayWorldFreeze();
@@ -1021,7 +1042,14 @@ class FairwayStudioApp {
         this.ui.setMode('designer');
         this.setViewportShadingMode(this.currentShadingMode, true);
         if (this.currentShadingMode === 'rendered') {
+          this.setHdriEnvironment(this.currentEnvSettings, true);
           this.refreshShadowsAndMaterials(true);
+          requestAnimationFrame(() => {
+            if (this.activeMode === 'designer' && this.currentShadingMode === 'rendered') {
+              this.setHdriEnvironment(this.currentEnvSettings, true);
+              this.refreshShadowsAndMaterials(true);
+            }
+          });
         }
         this.updateDevStats();
         this.ui.updateFeatureList(this.terrain.stampedFeatures, this.selectedFeatureIndex);
@@ -2340,7 +2368,11 @@ class FairwayStudioApp {
             this.brushVisualizer.setVisible(false);
             if (consumedMove || this.featureTracer.getMode() !== 'off') return;
           }
-          if (this.activeDesignerTool === 'erase' || this.activeDesignerTool === 'select') {
+          if (
+            this.activeDesignerTool === 'erase' ||
+            this.activeDesignerTool === 'select' ||
+            (this.cameraCtrl.isUserDragging && !(pointerInfo.event.shiftKey && this.activeDesignerTool === 'sculpt'))
+          ) {
             this.brushVisualizer.setVisible(false);
           } else {
             const pick = this.scene.pick(
@@ -2379,7 +2411,7 @@ class FairwayStudioApp {
           }
         } else if (pointerInfo.type === PointerEventTypes.POINTERUP) {
           if (this.wasCameraDetachedForTrace) {
-            this.cameraCtrl.camera.attachControl(this.canvas, true, false);
+            this.cameraCtrl.camera.attachControl(this.canvas, false, false);
             this.wasCameraDetachedForTrace = false;
           }
           if (this.featureTracer?.handlePointerUp()) {
@@ -3596,9 +3628,17 @@ class FairwayStudioApp {
 
     this.recordHistoryStep('Delete ' + (root.name || 'Object'));
 
-    if (this.selectedMesh === root || this.selectedMesh === mesh) {
+    const wasSelected =
+      this.selectedMesh === root ||
+      this.selectedMesh === mesh ||
+      (this.selectedMesh !== null && this.getRootSceneryMesh(this.selectedMesh) === root);
+    if (wasSelected) {
       this.gizmoManager.attachToMesh(null);
       this.selectedMesh = null;
+      this.updateObjectSelectionOutline(null);
+      if (this.selectionHighlightLayer) {
+        this.selectionHighlightLayer.removeAllMeshes();
+      }
       this.ui.updateDevSelectedObject(null);
     }
 
@@ -3618,6 +3658,7 @@ class FairwayStudioApp {
     this.courseManager.removeSceneryMesh(root);
     root.dispose(false, false);
 
+    this.refreshOutliner();
     soundFx.playCupDrop();
     this.ui.showToast('Object deleted 🧹', 'info', 2000);
     this.updateDevStats();
