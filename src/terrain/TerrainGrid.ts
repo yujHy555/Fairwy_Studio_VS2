@@ -2080,7 +2080,7 @@ export class TerrainGrid {
   public playCorridorBounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
   private rawImportedBaseHeights: Float32Array | null = null;
   private rawImportedMinElev: number = 0;
-  public heightmapStrength: number = 1.0;
+  public heightmapStrength: number = 0.55;
 
   /**
    * Rewrites legacy/pre-Stage-1 2K/missing texture paths to the current 1K/512 PBR assets
@@ -3840,9 +3840,22 @@ export class TerrainGrid {
       );
     }
     this.playCorridorBounds = null;
-    this.baseHeights.set(newBaseHeights);
-    this.setPristineNaturalHeights(newBaseHeights);
-    this.heights.set(newBaseHeights);
+    this.rawImportedBaseHeights = new Float32Array(newBaseHeights);
+    let minH = Infinity;
+    for (let i = 0; i < newBaseHeights.length; i++) {
+      if (newBaseHeights[i] < minH) minH = newBaseHeights[i];
+    }
+    this.rawImportedMinElev = Number.isFinite(minH) ? minH : 0;
+    this.heightmapStrength = 0.55;
+    for (let i = 0; i < this.baseHeights.length; i++) {
+      this.baseHeights[i] = this.rawImportedMinElev + (this.rawImportedBaseHeights[i] - this.rawImportedMinElev) * this.heightmapStrength;
+    }
+    this.setPristineNaturalHeights(this.baseHeights);
+    this.heights.set(this.baseHeights);
+    const hmSlider = document.getElementById('input-heightmap-strength') as HTMLInputElement | null;
+    if (hmSlider) hmSlider.value = '0.55';
+    const hmLbl = document.getElementById('val-heightmap-strength');
+    if (hmLbl) hmLbl.textContent = '0.55x';
     this.surfaceTypes.fill(SurfaceType.ROUGH);
     this.courseBoundaryMask =
       courseBoundaryMask && courseBoundaryMask.length === this.gridX * this.gridZ
@@ -3881,16 +3894,22 @@ export class TerrainGrid {
     clearFeatures = true
   ) {
     this.resizeGrid(course.worldWidth, course.worldLength, course.cellSize, false);
-    this.baseHeights.set(course.baseHeights);
     this.rawImportedBaseHeights = new Float32Array(course.baseHeights);
     let minH = Infinity;
     for (let i = 0; i < course.baseHeights.length; i++) {
       if (course.baseHeights[i] < minH) minH = course.baseHeights[i];
     }
     this.rawImportedMinElev = Number.isFinite(minH) ? minH : 0;
-    this.heightmapStrength = 1.0;
-    this.setPristineNaturalHeights(course.baseHeights);
-    this.heights.set(course.baseHeights);
+    this.heightmapStrength = 0.55;
+    for (let i = 0; i < this.baseHeights.length; i++) {
+      this.baseHeights[i] = this.rawImportedMinElev + (this.rawImportedBaseHeights[i] - this.rawImportedMinElev) * this.heightmapStrength;
+    }
+    this.setPristineNaturalHeights(this.baseHeights);
+    this.heights.set(this.baseHeights);
+    const hmSlider = document.getElementById('input-heightmap-strength') as HTMLInputElement | null;
+    if (hmSlider) hmSlider.value = '0.55';
+    const hmLbl = document.getElementById('val-heightmap-strength');
+    if (hmLbl) hmLbl.textContent = '0.55x';
     this.surfaceTypes.fill(SurfaceType.ROUGH);
     this.courseBoundaryMask =
       course.courseBoundaryMask && course.courseBoundaryMask.length === this.gridX * this.gridZ

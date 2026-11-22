@@ -622,8 +622,8 @@ export class UIController {
           </div>
 
           <div class="slider-control" style="margin-bottom: 8px;">
-            <label>Heightmap Strength: <span id="val-heightmap-strength">1.00x</span></label>
-            <input type="range" id="input-heightmap-strength" min="0.1" max="3.0" step="0.05" value="1.0" />
+            <label>Heightmap Strength: <span id="val-heightmap-strength">0.55x</span></label>
+            <input type="range" id="input-heightmap-strength" min="0.1" max="3.0" step="0.05" value="0.55" />
           </div>
 
           <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px; font-weight: 600;">Trace Surface Contour:</div>
