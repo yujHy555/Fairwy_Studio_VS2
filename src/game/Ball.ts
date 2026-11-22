@@ -21,6 +21,7 @@ import { RealisticTextures } from '../terrain/RealisticTextures';
 import { soundFx } from '../core/Audio';
 import { TreeCollider } from '../terrain/Scenery';
 import { DivotParticleSystem } from './DivotParticleSystem';
+import { LandingRippleEffect } from './LandingRippleEffect';
 
 export const BACKSPIN_QUALIFIED_CLUBS = ['6iron', '7iron', '8iron', '9iron', 'pw', 'sw', 'lw'];
 
@@ -85,6 +86,10 @@ export class Ball {
 
   // Backspin & Landing Divot System
   public divotSystem: DivotParticleSystem;
+  public landingRipple: LandingRippleEffect;
+  private hasTriggeredLandingRipple: boolean = false;
+  private lastShotClubId: string = '';
+  private lastShotClubCategory: string = '';
   public isBackspinEligible: boolean = false;
   public backspinBounceCount: number = 0;
   public backspinWindowActive: boolean = false;
@@ -109,6 +114,7 @@ export class Ball {
     this.scene = scene;
     this.terrain = terrain;
     this.divotSystem = new DivotParticleSystem(this.scene);
+    this.landingRipple = new LandingRippleEffect(this.scene, this.terrain);
 
     // Smooth high-tessellation regulation golf ball mesh (32 segments) textured with golf_ball_texture_01.jpg
     this.mesh = MeshBuilder.CreateSphere('golfBall', {
@@ -549,6 +555,9 @@ export class Ball {
     this.backspinLocked = false;
     this.hasFirstImpactOccurred = false;
     this.timeSinceFirstImpact = 0;
+    this.hasTriggeredLandingRipple = false;
+    this.lastShotClubId = shot.club.id;
+    this.lastShotClubCategory = shot.club.category;
     this.backspinApproachDir = { x: 0, z: 0 };
     this.divotSystem.clearAllDivots();
 
@@ -909,6 +918,22 @@ export class Ball {
                     surface === SurfaceType.BUNKER ? 'sand' :
                     (surface === SurfaceType.ROUGH || surface === SurfaceType.FIRST_CUT) ? 'rough' : 'fairway';
     soundFx.playBounce(surfKey, impactSpeed / 35.0);
+
+    // Triple-AAA Concentric Digital Flow & Release Landing Ring on exact first-bounce impact:
+    //  1) Drives landing on a Fairway
+    //  2) Approach shots to the Green (120m in & further, non-putter) landing on the Green
+    if (!this.hasTriggeredLandingRipple) {
+      this.hasTriggeredLandingRipple = true;
+      const carryDist = Math.hypot(
+        this.mesh.position.x - this.shotOrigin.x,
+        this.mesh.position.z - this.shotOrigin.z
+      );
+      if (this.lastShotClubId === 'driver' && surface === SurfaceType.FAIRWAY && carryDist >= 40) {
+        this.landingRipple.spawn(this.mesh.position.x, this.mesh.position.z, 'fairway');
+      } else if (this.lastShotClubCategory !== 'putter' && surface === SurfaceType.GREEN && carryDist >= 15) {
+        this.landingRipple.spawn(this.mesh.position.x, this.mesh.position.z, 'green');
+      }
+    }
 
     // Direct cup hole-in on landing
     if (this.activePinPosition) {
