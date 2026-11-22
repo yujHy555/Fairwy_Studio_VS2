@@ -6211,10 +6211,51 @@ export class TerrainGrid {
       satelliteDataUrl: this.satellitePreviewDataUrl || null,
       satelliteOpacity: this.satelliteOpacity,
       stampedFeatures: this.stampedFeatures.map(f => {
+        const cloneMat = (m: any) => {
+          if (!m || typeof m !== 'object') return undefined;
+          const out: Record<string, any> = {};
+          for (const [mk, mv] of Object.entries(m)) {
+            if (
+              mk === 'customTile' ||
+              mk === 'customColorTex' ||
+              mk === 'customNormalTex' ||
+              mk === 'customRoughTex' ||
+              mk.startsWith('_')
+            ) {
+              continue;
+            }
+            if (mk === 'customTextureUrls' && mv && typeof mv === 'object') {
+              out[mk] = { ...(mv as Record<string, any>) };
+            } else {
+              out[mk] = mv;
+            }
+          }
+          return out;
+        };
+
         const clean: Record<string, any> = {};
         for (const [k, v] of Object.entries(f)) {
           if (k === 'customTile' || k.startsWith('_')) continue;
-          clean[k] = v;
+          if (k === 'materialSettings') {
+            clean[k] = cloneMat(v);
+          } else if (k === 'subMaterials' && v && typeof v === 'object') {
+            const subOut: Record<string, any> = {};
+            for (const [sk, sv] of Object.entries(v as Record<string, any>)) {
+              const cloned = cloneMat(sv);
+              if (cloned) subOut[sk] = cloned;
+            }
+            clean[k] = subOut;
+          } else if (k === 'customTextureUrls' && v && typeof v === 'object') {
+            clean[k] = { ...(v as Record<string, any>) };
+          } else {
+            clean[k] = v;
+          }
+        }
+        // Guarantee both materialSettings and subMaterials.surface are independently cloned (never dropped by circular-ref WeakSet)
+        if (!clean.materialSettings && clean.subMaterials?.surface) {
+          clean.materialSettings = cloneMat(clean.subMaterials.surface);
+        } else if (clean.materialSettings && (!clean.subMaterials || !clean.subMaterials.surface)) {
+          clean.subMaterials = { ...(clean.subMaterials || {}), surface: cloneMat(clean.materialSettings) };
         }
         return clean;
       }),
@@ -6290,6 +6331,10 @@ export class TerrainGrid {
         this.stampedFeatures = state.stampedFeatures.map((f: any) => {
           const copy = { ...f };
           if (copy.customTextureUrls) copy.customTextureUrls = sanitizeUrlObj(copy.customTextureUrls);
+          // Reconcile surface material if either materialSettings or subMaterials.surface was saved
+          if (!copy.materialSettings && copy.subMaterials?.surface) {
+            copy.materialSettings = { ...copy.subMaterials.surface };
+          }
           if (copy.materialSettings?.customTextureUrls) {
             copy.materialSettings = {
               ...copy.materialSettings,
@@ -6306,7 +6351,12 @@ export class TerrainGrid {
                 };
               }
             }
+            if (copy.materialSettings) {
+              subCopy.surface = copy.materialSettings;
+            }
             copy.subMaterials = subCopy;
+          } else if (copy.materialSettings) {
+            copy.subMaterials = { surface: copy.materialSettings };
           }
           return copy;
         });
@@ -6335,7 +6385,9 @@ export class TerrainGrid {
       }
       this.isBaseCourseDirty = true;
       this.dragStaticFeatureIdx = -1;
-      this.courseBoundaryMask = null;
+      this.rebuildLayerRegistry();
+      this.syncLayerPropsLut();
+      this.syncAnalyticalFeatureUniforms();
       this.syncPluginLayerState();
       this.redrawSplatTexture();
       this.rebuildMesh();

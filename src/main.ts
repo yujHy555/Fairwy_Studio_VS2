@@ -4005,6 +4005,9 @@ class FairwayStudioApp {
   }
 
   private async saveDefaultHole() {
+    if (this.courseManager?.courseData) {
+      this.courseManager.courseData.environmentSettings = { ...this.currentEnvSettings };
+    }
     const ok = await this.courseManager.saveCurrentAsDefault();
     if (ok) {
       if (this.ball && this.courseManager.currentStrokes === 0) {
