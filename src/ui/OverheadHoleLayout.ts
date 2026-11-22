@@ -425,6 +425,8 @@ export class OverheadHoleLayout {
   // Viewport mapping cache
   private viewCenterX: number = 0;
   private viewCenterZ: number = 0;
+  private viewOriginX: number = 0;
+  private viewOriginZ: number = 0;
   private viewAngle: number = 0; // rotation to align hole vertically
   private viewScale: number = 1.0;
   private canvasWidth: number = 536;
@@ -696,6 +698,9 @@ export class OverheadHoleLayout {
         this.dragIconMode = 'none';
         canvas.releasePointerCapture?.(e.pointerId);
         canvas.style.cursor = 'crosshair';
+        // Re-center & re-orient smoothly once the user finishes placing the icon
+        this.computeViewport();
+        this.render();
         return;
       }
       if (e.button === 0 && this.lastData) {
@@ -740,11 +745,10 @@ export class OverheadHoleLayout {
    */
   private worldToCanvas(wx: number, wz: number): { x: number; y: number } {
     if (!this.lastData) return { x: 0, y: 0 };
-    const { tee } = this.getEffectiveTeeAndPin();
 
-    // Rotate around tee by viewAngle so pin is strictly positive Y (upwards)
-    const relX = wx - tee.x;
-    const relZ = wz - tee.z;
+    // Rotate around locked viewOrigin by viewAngle so map stays 100% rock-solid while dragging Ball/Flag icons
+    const relX = wx - this.viewOriginX;
+    const relZ = wz - this.viewOriginZ;
     const cosA = Math.cos(this.viewAngle);
     const sinA = Math.sin(this.viewAngle);
 
@@ -761,7 +765,6 @@ export class OverheadHoleLayout {
    */
   private canvasToWorld(cx: number, cy: number): { x: number; z: number } | null {
     if (!this.lastData || this.viewScale === 0) return null;
-    const { tee } = this.getEffectiveTeeAndPin();
 
     const rotX = (cx - this.canvasWidth * 0.5) / this.viewScale + this.rotCenterX;
     const rotZ = (this.canvasHeight * 0.5 - cy) / this.viewScale + this.rotCenterZ;
@@ -769,13 +772,15 @@ export class OverheadHoleLayout {
     const cosNegA = Math.cos(-this.viewAngle);
     const sinNegA = Math.sin(-this.viewAngle);
 
-    const wx = tee.x + rotX * cosNegA - rotZ * sinNegA;
-    const wz = tee.z + rotX * sinNegA + rotZ * cosNegA;
+    const wx = this.viewOriginX + rotX * cosNegA - rotZ * sinNegA;
+    const wz = this.viewOriginZ + rotX * sinNegA + rotZ * cosNegA;
     return { x: wx, z: wz };
   }
 
   private computeViewport() {
     if (!this.lastData) return;
+    // Freeze radar zoom, center & orientation while actively dragging Ball/Flag icon so the map never spins under the cursor!
+    if (this.dragIconMode !== 'none') return;
     if (this.canvas) {
       const rect = this.canvas.getBoundingClientRect();
       if (rect.width >= 60 && rect.height >= 60) {
@@ -791,6 +796,8 @@ export class OverheadHoleLayout {
     }
 
     const { tee, pin } = this.getEffectiveTeeAndPin();
+    this.viewOriginX = tee.x;
+    this.viewOriginZ = tee.z;
     const ball = this.lastData.ballPos;
 
     // Angle of vector from Tee to Pin (oriented vertically: Tee near bottom, Pin near top)
