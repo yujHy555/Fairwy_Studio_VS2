@@ -3306,6 +3306,10 @@ export class UIController {
     document.getElementById('btn-open-course-guide')?.addEventListener('click', () => {
       this.openCourseGuide();
     });
+    document.getElementById('btn-overhead-expand-guide')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.openCourseGuide();
+    });
     document.getElementById('btn-open-new-hole')?.addEventListener('click', () => {
       this.openNewHoleModal();
     });

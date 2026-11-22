@@ -715,7 +715,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 float rDist = length(vec2(lx, lz));
                 float d = rDist - rSand; // < 0 inside sand, > 0 outside sand
 
-                float blendWidth = 1.40;
+                float blendWidth = 2.10;
                 float lipW = max(0.20, collarW);
                 float rBlendOffset = (showCollar > 0.5) ? (lipW + blendWidth) : sandFeather;
                 if (d > rBlendOffset) continue;
@@ -780,11 +780,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 float fringeW = max(0.0, gRC.w);
                 bool hasCollar = (showCollar > 0.5 && fringeW > 0.02);
                 float firstCutW = hasCollar ? (fringeW * 2.0) : 0.0;
-                float outerFeather = hasCollar ? 0.45 : 0.18;
+                float outerFeather = hasCollar ? 1.45 : 0.75;
 
                 float dx = worldX - gCH.x;
                 float dz = worldZ - gCH.y;
-                float maxDim = max(halfW, halfL) + firstCutW + outerFeather + 1.0;
+                float maxDim = max(halfW, halfL) + firstCutW + outerFeather + 1.5;
                 if (abs(dx) > maxDim || abs(dz) > maxDim) continue;
 
                 float lx = dx * gRC.x - dz * gRC.y;
@@ -857,12 +857,12 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 bool hasCollar = (wRC.z > 0.5 && wRC.w > 0.02);
                 float collarW = hasCollar ? max(0.35, wRC.w) : 0.0;
                 float shoreW = hasCollar ? clamp(0.28 + collarW * 0.16, 0.32, 0.72) : 0.50;
-                float outerFeather = hasCollar ? 0.65 : 0.48;
+                float outerFeather = hasCollar ? 1.55 : 1.05;
                 float maxReach = hasCollar ? max(shoreW + 0.35, shoreW + collarW * 0.85) : shoreW;
 
                 float dx = worldX - wCH.x;
                 float dz = worldZ - wCH.y;
-                float maxDim = max(halfW, halfL) + maxReach + outerFeather + 1.0;
+                float maxDim = max(halfW, halfL) + maxReach + outerFeather + 1.5;
                 if (abs(dx) > maxDim || abs(dz) > maxDim) continue;
 
                 float lx = dx * wRC.x - dz * wRC.y;
@@ -934,11 +934,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 float showCollar = tRC.z;
                 float collarW = max(0.0, tRC.w);
                 bool hasCollar = (showCollar > 0.5 && collarW > 0.02);
-                float outerFeather = hasCollar ? 0.55 : 0.28;
+                float outerFeather = hasCollar ? 1.45 : 0.85;
 
                 float dx = worldX - tCH.x;
                 float dz = worldZ - tCH.y;
-                float maxDim = max(halfW, halfL) + collarW + outerFeather + 1.5;
+                float maxDim = max(halfW, halfL) + collarW + outerFeather + 2.0;
                 if (abs(dx) > maxDim || abs(dz) > maxDim) continue;
 
                 float lx = dx * tRC.x - dz * tRC.y;
@@ -986,12 +986,12 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               inout vec3 ioCol,
               inout vec3 ioNorm
             ) {
-              if (surfLid < 0.5 || dVal > collarW + 0.55) return;
-              float coreW = 1.0 - smoothstep(-0.18, 0.18, dVal);
+              if (surfLid < 0.5 || dVal > collarW + 1.55) return;
+              float coreW = 1.0 - smoothstep(-0.22, 0.22, dVal);
               float effColW = showCol > 0.5 ? max(0.24, collarW) : 0.0;
               float totW = effColW > 0.05
-                ? (1.0 - smoothstep(effColW - 0.22, effColW + 0.34, dVal))
-                : coreW;
+                ? (1.0 - smoothstep(effColW - 0.28, effColW + 1.35, dVal))
+                : (1.0 - smoothstep(-0.22, 0.75, dVal));
               if (totW <= 0.001) return;
 
               vec3 sTex; float sMix; vec3 sNorm; float sR; float sM; vec3 sBase;
@@ -1037,12 +1037,12 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               inout float ioRough,
               inout float ioMet
             ) {
-              if (surfLid < 0.5 || dVal > collarW + 0.55) return;
-              float coreW = 1.0 - smoothstep(-0.18, 0.18, dVal);
+              if (surfLid < 0.5 || dVal > collarW + 1.55) return;
+              float coreW = 1.0 - smoothstep(-0.22, 0.22, dVal);
               float effColW = showCol > 0.5 ? max(0.24, collarW) : 0.0;
               float totW = effColW > 0.05
-                ? (1.0 - smoothstep(effColW - 0.22, effColW + 0.34, dVal))
-                : coreW;
+                ? (1.0 - smoothstep(effColW - 0.28, effColW + 1.35, dVal))
+                : (1.0 - smoothstep(-0.22, 0.75, dVal));
               if (totW <= 0.001) return;
 
               float sR; float sM;
@@ -7707,6 +7707,10 @@ export class TerrainGrid {
           iIdx = this.emitAdaptiveQuad(idx00, idx10, idx01, idx11, iIdx);
         } else {
           const cellStartV = nextV;
+          const subN = cz < this.gridZ - 1 && this.subdividedCells[(cz + 1) * this.gridX + cx] === 1;
+          const subS = cz > 0 && this.subdividedCells[(cz - 1) * this.gridX + cx] === 1;
+          const subE = cx < this.gridX - 1 && this.subdividedCells[cz * this.gridX + (cx + 1)] === 1;
+          const subW = cx > 0 && this.subdividedCells[cz * this.gridX + (cx - 1)] === 1;
 
           for (let iv = 0; iv <= 2; iv++) {
             const wz = (cz + iv * 0.5) * this.cellSize;
@@ -7725,23 +7729,70 @@ export class TerrainGrid {
               this.uvs[uIdx] = wx / this.width;
               this.uvs[uIdx + 1] = wz / this.length;
 
-              const hL = this.evaluateAnalyticalElevation(wx - eps, wz);
-              const hR = this.evaluateAnalyticalElevation(wx + eps, wz);
-              const hD = this.evaluateAnalyticalElevation(wx, wz - eps);
-              const hU = this.evaluateAnalyticalElevation(wx, wz + eps);
+              const isCorner = (iu === 0 || iu === 2) && (iv === 0 || iv === 2);
+              const isNonSubEdgeS = iv === 0 && iu === 1 && !subS;
+              const isNonSubEdgeN = iv === 2 && iu === 1 && !subN;
+              const isNonSubEdgeW = iu === 0 && iv === 1 && !subW;
+              const isNonSubEdgeE = iu === 2 && iv === 1 && !subE;
 
-              let nx = (hL - hR) / (2 * eps);
-              let ny = Math.max(0.65, 1.0);
-              let nz = (hD - hU) / (2 * eps);
-              const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1.0;
+              if (isCorner) {
+                // Match exact base-grid corner normal & vertex AO so zero square-block seams ever appear
+                const bIdx = (cz + (iv >> 1)) * cols + (cx + (iu >> 1));
+                const bp = bIdx * 3;
+                const bc = bIdx * 4;
+                this.normals[pIdx] = this.normals[bp];
+                this.normals[pIdx + 1] = this.normals[bp + 1];
+                this.normals[pIdx + 2] = this.normals[bp + 2];
+                this.colors[cIdx] = this.colors[bc];
+                this.colors[cIdx + 1] = this.colors[bc + 1];
+                this.colors[cIdx + 2] = this.colors[bc + 2];
+              } else if (isNonSubEdgeS || isNonSubEdgeN || isNonSubEdgeW || isNonSubEdgeE) {
+                // Match exact Gouraud-interpolated normal & AO along non-subdivided neighbor cell edge
+                let b0: number;
+                let b1: number;
+                if (isNonSubEdgeS) {
+                  b0 = cz * cols + cx;
+                  b1 = cz * cols + (cx + 1);
+                } else if (isNonSubEdgeN) {
+                  b0 = (cz + 1) * cols + cx;
+                  b1 = (cz + 1) * cols + (cx + 1);
+                } else if (isNonSubEdgeW) {
+                  b0 = cz * cols + cx;
+                  b1 = (cz + 1) * cols + cx;
+                } else {
+                  b0 = cz * cols + (cx + 1);
+                  b1 = (cz + 1) * cols + (cx + 1);
+                }
+                const nx = this.normals[b0 * 3] + this.normals[b1 * 3];
+                const ny = this.normals[b0 * 3 + 1] + this.normals[b1 * 3 + 1];
+                const nz = this.normals[b0 * 3 + 2] + this.normals[b1 * 3 + 2];
+                const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1.0;
+                this.normals[pIdx] = nx / len;
+                this.normals[pIdx + 1] = ny / len;
+                this.normals[pIdx + 2] = nz / len;
+                const ao = 0.5 * (this.colors[b0 * 4] + this.colors[b1 * 4]);
+                this.colors[cIdx] = ao;
+                this.colors[cIdx + 1] = ao;
+                this.colors[cIdx + 2] = ao;
+              } else {
+                const hL = this.evaluateAnalyticalElevation(wx - eps, wz);
+                const hR = this.evaluateAnalyticalElevation(wx + eps, wz);
+                const hD = this.evaluateAnalyticalElevation(wx, wz - eps);
+                const hU = this.evaluateAnalyticalElevation(wx, wz + eps);
 
-              this.normals[pIdx] = nx / len;
-              this.normals[pIdx + 1] = ny / len;
-              this.normals[pIdx + 2] = nz / len;
+                const nx = (hL - hR) / (2 * eps);
+                const ny = 1.0;
+                const nz = (hD - hU) / (2 * eps);
+                const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1.0;
 
-              this.colors[cIdx] = 1.0;
-              this.colors[cIdx + 1] = 1.0;
-              this.colors[cIdx + 2] = 1.0;
+                this.normals[pIdx] = nx / len;
+                this.normals[pIdx + 1] = ny / len;
+                this.normals[pIdx + 2] = nz / len;
+
+                this.colors[cIdx] = 1.0;
+                this.colors[cIdx + 1] = 1.0;
+                this.colors[cIdx + 2] = 1.0;
+              }
               this.colors[cIdx + 3] = this.getGrassMaskAt(wx, wz);
 
               nextV++;

@@ -135,7 +135,7 @@ export class OverheadHoleLayout {
     const btnRadar = document.getElementById('btn-overhead-mode-radar');
     const btnDist = document.getElementById('btn-overhead-dist-toggle');
     const btnExpand = document.getElementById('btn-overhead-expand-guide');
-    if (!btnGraphic && !btnRadar) return;
+    if (!btnGraphic && !btnRadar && !btnExpand) return;
 
     this.modeControlsBound = true;
     btnGraphic?.addEventListener('click', (e) => {
