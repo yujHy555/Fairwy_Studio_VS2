@@ -167,6 +167,7 @@ export interface UIEventCallbacks {
   onTraceCancel?: () => void;
   onTraceUndoPoint?: () => void;
   onRestartHole?: () => void;
+  onMulligan?: () => void;
 }
 
 
@@ -794,7 +795,8 @@ export class UIController {
               <span class="play-dev-title">⚡ DEVELOPER CONTROLS</span>
             </div>
             <div class="play-dev-actions">
-              <button id="btn-play-restart-hole" class="btn btn-sm play-dev-btn" title="Restart current hole from the Tee Box">🔄 Restart Hole</button>
+              <button id="btn-play-mulligan" class="btn btn-sm play-dev-btn" title="Mulligan: Re-hit your last shot">🏌️ Mulligan</button>
+              <button id="btn-play-restart-hole" class="btn btn-sm play-dev-btn" title="Restart current hole from the Tee Box">🔄 Restart</button>
               <button id="btn-play-open-designer" class="btn btn-sm play-dev-btn play-dev-btn-alt" title="Jump back into Course Designer">🛠️ Designer</button>
             </div>
           </div>
@@ -5723,6 +5725,10 @@ export class UIController {
     document.getElementById('btn-toggle-perf-tips')?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.togglePerfMinimized();
+    });
+    document.getElementById('btn-play-mulligan')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.callbacks.onMulligan?.();
     });
     document.getElementById('btn-play-restart-hole')?.addEventListener('click', (e) => {
       e.stopPropagation();

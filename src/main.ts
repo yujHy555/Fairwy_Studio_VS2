@@ -292,6 +292,16 @@ class FairwayStudioApp {
   private show1mGrid = false;
   private wasSettledOnGreen = false;
   private autoEnabledGreenOverlays = false;
+  private lastShotSnapshot: {
+    x: number;
+    y: number;
+    z: number;
+    lie: SurfaceType;
+    club: ClubSpec;
+    aimAzimuth: number;
+    strokes: number;
+    putts: number;
+  } | null = null;
 
   // Play state
   private activeClub: ClubSpec = GOLF_CLUBS[0];
@@ -1947,11 +1957,51 @@ class FairwayStudioApp {
           this.courseManager.currentPutts = 0;
           this.courseManager.snapTeeToTeeBox();
         }
+        this.lastShotSnapshot = null;
         this.ball.clearTracer();
+        this.ball.landingRipple.clear();
         this.placeBallAtActiveTee();
         this.ui.setSwingEnabled(true);
         this.updateHUDDisplay();
         this.ui.showToast('🔄 Hole restarted from Tee Box', 'info', 2000);
+      },
+      onMulligan: () => {
+        const snap = this.lastShotSnapshot;
+        if (!snap) {
+          this.ui.showToast('🏌️ Hit a shot first before taking a Mulligan', 'info', 2000);
+          return;
+        }
+        if (this.courseManager) {
+          this.courseManager.currentStrokes = snap.strokes;
+          this.courseManager.currentPutts = snap.putts;
+        }
+        this.ball.clearTracer();
+        this.ball.landingRipple.clear();
+        this.ball.setPosition(snap.x, snap.y, snap.z);
+        this.activeClub = snap.club;
+        this.swingEngine.setClub(snap.club);
+        this.swingEngine.setLie(snap.lie);
+        this.currentAimAzimuth = snap.aimAzimuth;
+        this.swingEngine.aimAzimuthDeg = snap.aimAzimuth;
+
+        if (this.aimSystem) {
+          this.aimSystem.aimHeadingDeg = this.currentAimAzimuth;
+          this.aimSystem.update(
+            this.ball.position,
+            this.activeClub,
+            this.swingEngine.windSpeedMps,
+            this.swingEngine.windHeadingDeg
+          );
+          this.aimSystem.setVisible(this.activeMode === 'play');
+        }
+        if (this.activeMode === 'play') {
+          this.cameraCtrl.setMode('aim');
+          this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+        }
+        this.ui.setSwingEnabled(true);
+        this.ui.updateClubCard(this.activeClub.id, false);
+        this.updateHUDDisplay();
+        this.ui.showToast('🏌️ Mulligan! Re-hit your shot', 'success', 2200);
       }
     });
 
@@ -2046,6 +2096,17 @@ class FairwayStudioApp {
     };
 
     this.swingEngine.onShotExecute = (shot) => {
+      // Save exact pre-shot state for instant Developer Tools Mulligan re-hit
+      this.lastShotSnapshot = {
+        x: this.ball.position.x,
+        y: this.ball.position.y,
+        z: this.ball.position.z,
+        lie: this.terrain.getSurfaceAt(this.ball.position.x, this.ball.position.z),
+        club: this.activeClub,
+        aimAzimuth: this.currentAimAzimuth,
+        strokes: this.courseManager.currentStrokes,
+        putts: this.courseManager.currentPutts
+      };
       this.courseManager.recordStroke(this.activeClub.category === 'putter');
       this.cameraCtrl.setMode('flight');
       if (this.aimSystem) {
