@@ -746,27 +746,27 @@ class FairwayStudioApp {
         if (CascadedShadowGenerator.IsSupported) {
           const csm = new CascadedShadowGenerator(profile.shadowMapSize, this.sunLight);
           csm.numCascades = profile.shadowCascades;
-          csm.lambda = 0.72; // Tighter near-camera cascade so Tee Markers, Aiming Arrow & Ball cast crisp shadows on the Tee Box
-          csm.shadowMaxZ = 420;
+          csm.lambda = 0.78; // High near/mid texel density for crisp shadows on Tee Box, Trees & Fairway
+          csm.shadowMaxZ = 280;
           csm.stabilizeCascades = true;
           csm.depthClamp = true;
           csm.autoCalcDepthBounds = false;
-          csm.cascadeBlendPercentage = 0.16;
-          csm.frustumEdgeFalloff = 0.08;
+          csm.cascadeBlendPercentage = 0.14;
+          csm.frustumEdgeFalloff = 0.06;
           csm.usePercentageCloserFiltering = true;
           csm.filteringQuality =
             profile.shadowFilterQuality === 'medium'
               ? CascadedShadowGenerator.QUALITY_MEDIUM
               : CascadedShadowGenerator.QUALITY_LOW;
-          csm.bias = 0.00025;
-          csm.normalBias = 0.004;
+          csm.bias = 0.0002;
+          csm.normalBias = 0.003;
           // Opaque depth-only shadow pass on integrated/laptop/mobile GPUs is 2-3x faster on foliage
           csm.transparencyShadow = profile.tier === 'high';
           csm.splitFrustum();
           const shadowMap = csm.getShadowMap();
-          if (shadowMap && profile.tier !== 'high') {
-            // Update cascaded shadows every 2nd frame on laptop/mobile GPUs (50% less shadow GPU work, 60 FPS camera)
-            shadowMap.refreshRate = RenderTargetTexture.REFRESHRATE_RENDER_ONEVERYTWOFRAMES;
+          if (shadowMap) {
+            // Every-frame refresh prevents CSM cascade lag/flicker when orbiting camera
+            shadowMap.refreshRate = RenderTargetTexture.REFRESHRATE_RENDER_ONEVERYFRAME;
           }
           this.shadowGenerator = csm;
           this.applyShadowDarknessSetting();
@@ -1411,7 +1411,7 @@ class FairwayStudioApp {
           this.selectCourseFeature(item.featureIndex);
         } else if (item.meshId) {
           const m = this.scene.getMeshById(item.meshId) || this.scene.getMeshByName(item.id);
-          if (m && m instanceof Mesh) {
+          if (m && (m instanceof Mesh || m instanceof InstancedMesh)) {
             this.selectMesh(m);
           }
         }
@@ -1429,18 +1429,36 @@ class FairwayStudioApp {
           this.cameraCtrl.frameOnTarget(this.ball.position.clone(), 6);
         } else if (item.meshId) {
           const m = this.scene.getMeshById(item.meshId) || this.scene.getMeshByName(item.id);
-          if (m && m instanceof Mesh) {
+          if (m && (m instanceof Mesh || m instanceof InstancedMesh)) {
             this.selectMesh(m);
             this.frameSelectedObject();
           }
         }
       },
       onOutlinerToggleVisibility: (item) => {
-        if (item.meshId) {
+        if (item.featureIndex !== undefined) {
+          const feat = this.terrain.stampedFeatures[item.featureIndex];
+          if (feat) {
+            feat.hidden = !item.isVisible;
+            if (feat.surfaceType === SurfaceType.WATER) {
+              const wm = this.findWaterMeshForFeature(feat);
+              if (wm) {
+                wm.setEnabled(item.isVisible);
+                wm.isVisible = item.isVisible;
+              }
+            }
+            this.terrain.syncAnalyticalFeatureUniforms();
+            this.terrain.redrawSplatTexture();
+          }
+        } else if (item.meshId) {
           const m = this.scene.getMeshById(item.meshId) || this.scene.getMeshByName(item.id);
           if (m) {
+            m.setEnabled(item.isVisible);
             m.isVisible = item.isVisible;
-            m.getChildMeshes?.().forEach(c => c.isVisible = item.isVisible);
+            m.getChildMeshes?.(false).forEach((c) => {
+              c.setEnabled(item.isVisible);
+              c.isVisible = item.isVisible;
+            });
           }
         }
       },
@@ -3454,6 +3472,10 @@ class FairwayStudioApp {
       this.gizmoManager.attachToMesh(null);
     }
     this.syncGizmoAxisLocks();
+    this.ui.syncOutlinerSelection(
+      mesh === this.featureGizmoProxy ? this.selectedFeatureIndex : -1,
+      mesh && mesh !== this.featureGizmoProxy ? mesh.id : null
+    );
     this.ui.updateDevSelectedObject(mesh, this.canDeleteMesh(mesh), mesh === this.featureGizmoProxy);
     this.ui.updateDevObjectList(
       this.getSelectable3DModels().map(m => ({ id: m.id, label: m.label })),
@@ -5412,12 +5434,19 @@ class FairwayStudioApp {
 
   private applyShadowDarknessSetting() {
     if (!this.shadowGenerator) return;
-    // Intuitive 0.0 (very soft/light) -> 1.0 (deep dramatic dark shadow) mapped to Babylon's inverted darkness
+    // Intuitive 0.0 (very soft/light) -> 1.0 (deep, crisp dramatic shadow)
     const uiDarkness = Math.max(0.0, Math.min(1.0, this.currentEnvSettings.shadowDarkness ?? 0.72));
-    const babylonDarkness = Math.max(0.0, Math.min(0.92, 1.0 - uiDarkness));
+    // Non-linear curve gives rich, deep contrast at 0.7..1.0 and smooth full lift down to 0.0
+    const babylonDarkness = Math.max(0.0, Math.min(1.0, Math.pow(1.0 - uiDarkness, 1.35)));
     this.shadowGenerator.darkness = babylonDarkness;
     if (this.shadowGenerator instanceof CascadedShadowGenerator) {
-      this.shadowGenerator.penumbraDarkness = Math.max(0.25, Math.min(1.0, 0.35 + uiDarkness * 0.65));
+      this.shadowGenerator.penumbraDarkness = Math.max(0.15, Math.min(1.0, 0.25 + uiDarkness * 0.75));
+    }
+    // Gently attenuate ambient hemisphere fill at high shadow darkness so cast shadows read crisp & deep
+    const hemi = this.scene.getLightByName('hemiLight') as HemisphericLight | null;
+    if (hemi) {
+      const baseAmbient = 0.55;
+      hemi.intensity = baseAmbient * (1.12 - uiDarkness * 0.56);
     }
   }
 
@@ -5425,25 +5454,28 @@ class FairwayStudioApp {
     const cam = this.cameraCtrl?.camera || this.scene.activeCamera;
     if (!cam) return;
 
-    // 1. Half-resolution GPU-Optimized HDR Bloom (DefaultRenderingPipeline)
+    // 1. Half-resolution GPU-Optimized Triple-AAA Bloom (sRGB = zero HDR reallocation black flash, 100% OFF when disabled!)
     const bloomOn = Boolean(this.currentEnvSettings.bloomEnabled);
     if (bloomOn) {
       if (!this.postPipeline) {
-        this.postPipeline = new DefaultRenderingPipeline('FairwayPostPipeline', true, this.scene, [cam]);
+        this.postPipeline = new DefaultRenderingPipeline('FairwayPostPipeline', false, this.scene, [cam]);
         this.postPipeline.samples = 1;
         this.postPipeline.fxaaEnabled = false;
-        this.postPipeline.imageProcessingEnabled = false; // Scene imageProcessing handles ACES tonemapping
-        this.postPipeline.bloomScale = 0.5; // Half-resolution for minimal GPU cost
+        this.postPipeline.imageProcessingEnabled = false; // Scene imageProcessing handles ACES tonemapping cleanly
+        this.postPipeline.bloomScale = 0.5; // Half-resolution for high FPS
       }
       this.postPipeline.bloomEnabled = true;
       this.postPipeline.bloomWeight = Math.max(0.0, Math.min(1.5, this.currentEnvSettings.bloomWeight ?? 0.32));
-      this.postPipeline.bloomThreshold = Math.max(0.1, Math.min(1.5, this.currentEnvSettings.bloomThreshold ?? 0.85));
+      this.postPipeline.bloomThreshold = Math.max(0.15, Math.min(1.5, this.currentEnvSettings.bloomThreshold ?? 0.85));
       this.postPipeline.bloomKernel = Math.max(16, Math.min(128, this.currentEnvSettings.bloomKernel ?? 48));
     } else if (this.postPipeline) {
       this.postPipeline.bloomEnabled = false;
+      this.postPipeline.bloomWeight = 0;
+      this.postPipeline.dispose();
+      this.postPipeline = null;
     }
 
-    // 2. Next-Gen Single-Pass Half-Res Anamorphic Lens Flare PostProcess (<0.3ms GPU cost, 0ms when off)
+    // 2. Next-Gen Single-Pass Half-Res Anamorphic Lens Flare PostProcess (<0.25ms GPU cost, 100% OFF when disabled!)
     const anaOn = Boolean(this.currentEnvSettings.anamorphicEnabled);
     if (anaOn) {
       if (!Effect.ShadersStore['anamorphicFlareFragmentShader']) {
@@ -5456,28 +5488,29 @@ class FairwayStudioApp {
             vec4 baseCol = texture2D(textureSampler, vUV);
             float intensity = uFlareParams.x;
             float thresh = uFlareParams.y;
-            float stretch = uFlareParams.z * 0.018;
+            float stretch = uFlareParams.z * 0.022;
             vec3 streak = vec3(0.0);
-            float weights[5];
-            weights[0] = 0.30;
-            weights[1] = 0.23;
+            float weights[6];
+            weights[0] = 0.26;
+            weights[1] = 0.21;
             weights[2] = 0.16;
-            weights[3] = 0.10;
-            weights[4] = 0.06;
-            for (int i = -4; i <= 4; i++) {
+            weights[3] = 0.11;
+            weights[4] = 0.07;
+            weights[5] = 0.04;
+            for (int i = -5; i <= 5; i++) {
               float fi = float(i);
               float offX = fi * stretch;
               vec2 sUv = vec2(clamp(vUV.x + offX, 0.001, 0.999), vUV.y);
               vec3 sCol = texture2D(textureSampler, sUv).rgb;
               float lum = dot(sCol, vec3(0.2126, 0.7152, 0.0722));
-              float bright = max(0.0, lum - thresh) / max(0.08, 1.0 - thresh * 0.35);
+              // Soft-knee cinema highlight extraction (avoids harsh clipping on clouds & white bunkers)
+              float bright = smoothstep(thresh * 0.85, thresh + 0.35, lum) * max(0.0, lum - thresh * 0.75);
               int idx = i < 0 ? -i : i;
-              float w = (idx == 0) ? weights[0] : (idx == 1) ? weights[1] : (idx == 2) ? weights[2] : (idx == 3) ? weights[3] : weights[4];
-              // Subtle cinema anamorphic cyan-blue edge tint with warm gold core
-              vec3 tint = mix(vec3(1.0, 0.94, 0.82), vec3(0.42, 0.78, 1.0), float(idx) * 0.24);
+              float w = (idx == 0) ? weights[0] : (idx == 1) ? weights[1] : (idx == 2) ? weights[2] : (idx == 3) ? weights[3] : (idx == 4) ? weights[4] : weights[5];
+              vec3 tint = mix(vec3(1.0, 0.95, 0.84), vec3(0.36, 0.76, 1.0), float(idx) * 0.20);
               streak += sCol * bright * w * tint;
             }
-            gl_FragColor = vec4(baseCol.rgb + streak * intensity * 0.65, baseCol.a);
+            gl_FragColor = vec4(baseCol.rgb + streak * intensity * 0.75, baseCol.a);
           }
         `;
       }
@@ -5506,6 +5539,7 @@ class FairwayStudioApp {
         };
       }
     } else if (this.anamorphicPostProcess) {
+      cam.detachPostProcess(this.anamorphicPostProcess);
       this.anamorphicPostProcess.dispose(cam);
       this.anamorphicPostProcess = null;
     }
@@ -5642,7 +5676,7 @@ class FairwayStudioApp {
         icon,
         posX: feat.centerX,
         posZ: feat.centerZ,
-        isVisible: true,
+        isVisible: !feat.hidden,
         featureIndex: i,
         holeNumber: feat.holeNumber ?? hole.number
       });

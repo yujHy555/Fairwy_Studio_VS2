@@ -1958,6 +1958,7 @@ export interface StampedFeatureRecord {
   id?: string;
   name?: string;
   holeNumber?: number; // Assigned course hole (1..18) for 18-hole ordering, Tee/Green routing & Next Hole flow
+  hidden?: boolean;    // Outliner visibility toggle
   centerX: number;
   centerZ: number;
   width: number;
@@ -3347,6 +3348,7 @@ export class TerrainGrid {
 
     for (let featIdx = 0; featIdx < this.stampedFeatures.length; featIdx++) {
       const feat = this.stampedFeatures[featIdx];
+      if (feat.hidden) continue;
       if (feat.contour && feat.contour.length >= 3) {
         // Traced arbitrary polygon features render via GPU SDF atlas / polygon layer instead of parametric ellipses
         continue;
@@ -3555,7 +3557,7 @@ export class TerrainGrid {
 
     for (let featIdx = 0; featIdx < this.stampedFeatures.length; featIdx++) {
       const feat = this.stampedFeatures[featIdx];
-      if (!feat.contour || feat.contour.length < 3) continue;
+      if (!feat.contour || feat.contour.length < 3 || feat.hidden) continue;
       const ch = channelForType(feat.surfaceType);
       if (ch < 0) continue;
 
@@ -6564,6 +6566,7 @@ export class TerrainGrid {
       .sort((a, b) => layerPriority(a.feat.surfaceType) - layerPriority(b.feat.surfaceType));
 
     for (const { feat, origIndex } of indexedFeatures) {
+      if (feat.hidden) continue;
       this.drawFeatureOnCanvas(ctx, feat, origIndex, sX, sZ, null, sX, sZ, tiles);
     }
 

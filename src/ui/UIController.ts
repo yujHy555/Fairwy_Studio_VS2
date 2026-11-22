@@ -312,6 +312,7 @@ export class UIController {
   private isTipsModalOpen: boolean = false;
   private activeFeatureList: any[] = [];
   private selectedFeatureIdx: number = -1;
+  private selectedOutlinerMeshId: string | null = null;
   private selectedFeatureSubMatId: FeatureSubMaterialId = 'surface';
   private selectedObjectSubMatIdx: number = 0;
   private bottomDock: HTMLElement | null = null;
@@ -5595,6 +5596,27 @@ export class UIController {
     this.renderOutlinerList();
   }
 
+  public syncOutlinerSelection(featureIndex: number, meshId: string | null) {
+    this.selectedFeatureIdx = featureIndex;
+    this.selectedOutlinerMeshId = meshId;
+    const listEl = document.getElementById('outliner-items-list');
+    if (!listEl) return;
+    let matchedRow: HTMLElement | null = null;
+    listEl.querySelectorAll<HTMLElement>('.outliner-row').forEach((r) => {
+      const rid = r.dataset.id || '';
+      const rMeshId = r.dataset.meshId || '';
+      const rFeatIdx = r.dataset.featureIndex !== undefined ? Number(r.dataset.featureIndex) : -1;
+      const isMatch =
+        (featureIndex >= 0 && rFeatIdx === featureIndex) ||
+        (Boolean(meshId) && (rMeshId === meshId || rid === meshId));
+      r.classList.toggle('is-selected', isMatch);
+      if (isMatch) matchedRow = r;
+    });
+    if (matchedRow) {
+      (matchedRow as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
   public renderOutlinerList() {
     const listEl = document.getElementById('outliner-items-list');
     if (!listEl) return;
@@ -5627,9 +5649,13 @@ export class UIController {
       const row = document.createElement('div');
       row.className = item.parentId ? 'outliner-row is-child' : 'outliner-row';
       row.dataset.id = item.id;
+      if (item.meshId) row.dataset.meshId = item.meshId;
+      if (item.featureIndex !== undefined) row.dataset.featureIndex = String(item.featureIndex);
 
       const isFeature = item.featureIndex !== undefined;
-      const isSelected = isFeature ? this.selectedFeatureIdx === item.featureIndex : false;
+      const isSelected = isFeature
+        ? this.selectedFeatureIdx === item.featureIndex
+        : Boolean(this.selectedOutlinerMeshId && (item.meshId === this.selectedOutlinerMeshId || item.id === this.selectedOutlinerMeshId));
       if (isSelected) row.classList.add('is-selected');
 
       const assignedHole = Math.max(1, Math.min(18, item.holeNumber ?? 1));

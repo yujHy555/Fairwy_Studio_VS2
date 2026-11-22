@@ -268,13 +268,38 @@ export class FeatureTracer {
     return true;
   }
 
+  /**
+   * Chaikin corner-cutting subdivision: automatically rounds sharp hand-clicked
+   * spline corners into organic PGA Tour curves while keeping vertex count lightweight.
+   */
+  private chaikinSmoothClosed(pts: PolygonPoint[], iterations: number = 2): PolygonPoint[] {
+    let cur = pts.map((p) => ({ x: p.x, z: p.z }));
+    for (let it = 0; it < iterations; it++) {
+      const n = cur.length;
+      if (n < 3) break;
+      const next: PolygonPoint[] = [];
+      for (let i = 0; i < n; i++) {
+        const p0 = cur[i];
+        const p1 = cur[(i + 1) % n];
+        next.push({ x: p0.x * 0.75 + p1.x * 0.25, z: p0.z * 0.75 + p1.z * 0.25 });
+        next.push({ x: p0.x * 0.25 + p1.x * 0.75, z: p0.z * 0.25 + p1.z * 0.75 });
+      }
+      cur = next;
+      if (cur.length >= 48) break;
+    }
+    return cur;
+  }
+
   public finishTrace(): boolean {
     if (this.activePoints.length < 3) return false;
     const raw =
       this.mode === 'freehand'
         ? rdpSimplify(this.activePoints, 1.45)
         : this.activePoints.map((p) => ({ ...p }));
-    const smoothed = catmullRomClosed(raw, 4);
+    // Auto-round corners with Chaikin subdivision + Catmull-Rom spline for silky, optimized contours
+    const rounded = this.chaikinSmoothClosed(raw, 2);
+    const segsPerSpan = rounded.length > 24 ? 1 : 2;
+    const smoothed = catmullRomClosed(rounded, segsPerSpan);
     const surf = this.targetSurface;
     this.activePoints = [];
     this.cursorWorld = null;
