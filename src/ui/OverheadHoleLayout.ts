@@ -648,14 +648,14 @@ export class OverheadHoleLayout {
         const { pin: effPin } = this.getEffectiveTeeAndPin();
         const pinPt = this.worldToCanvas(effPin.x, effPin.z);
 
-        if (canDragBall() && Math.hypot(cx - ballPt.x, cy - ballPt.y) <= 20) {
+        if (canDragBall() && Math.hypot(cx - ballPt.x, cy - ballPt.y) <= 24) {
           this.dragIconMode = 'ball';
           canvas.setPointerCapture?.(e.pointerId);
           canvas.style.cursor = 'grabbing';
           e.stopPropagation();
           return;
         }
-        if (canDragPin() && Math.hypot(cx - pinPt.x, cy - pinPt.y) <= 22) {
+        if (canDragPin() && Math.hypot(cx - pinPt.x, cy - pinPt.y) <= 24) {
           this.dragIconMode = 'pin';
           canvas.setPointerCapture?.(e.pointerId);
           canvas.style.cursor = 'grabbing';
@@ -898,13 +898,10 @@ export class OverheadHoleLayout {
     let tee = { x: data.hole.teePosition.x, z: data.hole.teePosition.z };
     let pin = { x: data.pinPos.x, z: data.pinPos.z };
 
-    // Dynamically recognize user-added Tee Box and Green features so 3D Radar & aiming stay synced!
+    // Dynamically recognize user-added Tee Box and Green features so Radar & aiming always stay 1:1 synced!
     const teeFeat = data.features.find((f) => f.surfaceType === SurfaceType.TEE);
     if (teeFeat && !data.hole.hasCustomTeePosition) {
-      const distTee = Math.hypot(teeFeat.centerX - tee.x, teeFeat.centerZ - tee.z);
-      if (distTee > 25) {
-        tee = { x: teeFeat.centerX, z: teeFeat.centerZ };
-      }
+      tee = { x: teeFeat.centerX, z: teeFeat.centerZ };
     }
     const greenFeat = data.features.find((f) => f.surfaceType === SurfaceType.GREEN);
     if (greenFeat) {
@@ -974,13 +971,14 @@ export class OverheadHoleLayout {
       ctx.fillRect(0, 0, W, H);
 
       // Draw original imported satellite color texture at full clarity & 1:1 world alignment!
+      // Matches BabylonJS Texture invertY=true: image top (y=0) = North (wz=terrainLength), image bottom = South (wz=0).
       if (hasSat && this.satImg) {
         ctx.save();
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        const originC = this.worldToCanvas(0, 0);
-        const axisXC = this.worldToCanvas(data.terrainWidth, 0);
-        const axisZC = this.worldToCanvas(0, data.terrainLength);
+        const originC = this.worldToCanvas(0, data.terrainLength);
+        const axisXC = this.worldToCanvas(data.terrainWidth, data.terrainLength);
+        const axisZC = this.worldToCanvas(0, 0);
         const a = (axisXC.x - originC.x) / data.terrainWidth;
         const b = (axisXC.y - originC.y) / data.terrainWidth;
         const c = (axisZC.x - originC.x) / data.terrainLength;
@@ -1166,7 +1164,21 @@ export class OverheadHoleLayout {
     ctx.fillText('PIN', pinPt.x, pinPt.y + 7);
     ctx.restore();
 
-    // 7. Realtime Pulsing Ball Marker
+    // 7. Tee Marker Badge + Realtime Pulsing Ball Marker
+    const hasTeeFeature = data.features.some((f) => f.surfaceType === SurfaceType.TEE);
+    ctx.save();
+    // Subtle cyan Tee ring so the Tee position is always crystal-clear (and clearly grabbable before Tee Box is added)
+    ctx.beginPath();
+    ctx.arc(teePt.x, teePt.y, hasTeeFeature ? 6.5 : 8.5, 0, Math.PI * 2);
+    ctx.strokeStyle = hasTeeFeature ? 'rgba(56, 189, 248, 0.72)' : 'rgba(52, 211, 153, 0.92)';
+    ctx.lineWidth = hasTeeFeature ? 1.4 : 1.8;
+    ctx.stroke();
+    ctx.fillStyle = hasTeeFeature ? 'rgba(186, 230, 253, 0.9)' : '#6ee7b7';
+    ctx.font = '800 7px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('TEE', teePt.x, teePt.y + 15);
+    ctx.restore();
+
     ctx.save();
     const ballPulseR = 5 + 4 * Math.sin(this.pulsePhase);
     ctx.beginPath();

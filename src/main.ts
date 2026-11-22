@@ -2014,11 +2014,14 @@ class FairwayStudioApp {
         hole.teePosition = { x: wx, y, z: wz };
         hole.hasCustomTeePosition = true;
         this.ball.setPosition(wx, y + GOLF_CONSTANTS.BALL_RENDER_RADIUS, wz);
+        const pin = hole.pinPosition;
+        const headingRad = Math.atan2(pin.x - wx, pin.z - wz);
         if (this.courseManager.activeTeeMesh && !this.courseManager.activeTeeMesh.isDisposed()) {
           this.courseManager.activeTeeMesh.position.set(wx, y, wz);
+          this.courseManager.activeTeeMesh.rotationQuaternion = null;
+          this.courseManager.activeTeeMesh.rotation.set(0, headingRad, 0);
         }
-        const pin = hole.pinPosition;
-        this.currentAimAzimuth = (Math.atan2(pin.x - wx, pin.z - wz) * 180) / Math.PI;
+        this.currentAimAzimuth = (headingRad * 180) / Math.PI;
         this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
         if (this.activeMode === 'play') {
           this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
