@@ -622,7 +622,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outColor = texCol;
               outColorMix = clamp(lpMat.x, 0.0, 1.0);
               float effSlope = kind > 1.5 && kind < 2.5 ? slopeSafe : 1.0;
-              float normLvl = max(0.0, lpMat.z) * effSlope * (outColorMix < 0.01 ? 0.0 : 1.0);
+              // Zero-tap tile-edge normal feathering: eliminates rectangular normal-map specular seams on flat elevated Tee Boxes
+              vec2 tileF = fract(layerUv);
+              vec2 edgeDist = min(tileF, 1.0 - tileF);
+              float edgeMask = smoothstep(0.0, 0.07, min(edgeDist.x, edgeDist.y));
+              float normLvl = max(0.0, lpMat.z) * effSlope * edgeMask * (outColorMix < 0.01 ? 0.0 : 1.0);
               outNormal = normLvl > 0.001
                 ? normalize(terrainTBN * normalize(vec3(normRaw.xy * normLvl, max(0.55, normRaw.z))))
                 : geomN;
@@ -2457,7 +2461,8 @@ export class TerrainGrid {
         const halfL = feat.length * 0.5;
         const dx = worldX - feat.centerX;
         const dz = worldZ - feat.centerZ;
-        if (Math.abs(dx) > feat.width && Math.abs(dz) > feat.length) continue;
+        const maxReach = Math.max(feat.width, feat.length) * 0.85 + 2.5;
+        if (Math.abs(dx) > maxReach || Math.abs(dz) > maxReach) continue;
 
         const cosR = Math.cos(-feat.rotationRad);
         const sinR = Math.sin(-feat.rotationRad);
@@ -3711,6 +3716,7 @@ export class TerrainGrid {
     applyUv(this.pbrGrassColorTex);
     applyUv(this.pbrGrassNormalTex);
     applyUv(this.pbrGrassRoughTex);
+    this.syncLayerPropsLut();
     this.terrainMaterial?.markAsDirty(Material.TextureDirtyFlag | Material.MiscDirtyFlag);
 
     if (rebuild) {
@@ -5080,8 +5086,9 @@ export class TerrainGrid {
         : Math.max(0.0, Math.min(2.5, mat.normalLevel ?? (isSand ? 0.36 : 0.40)));
 
       const r0 = lid * 4;
-      data[r0 + 0] = Math.max(0.01, mat.uScale ?? 1.0) * 110.0;
-      data[r0 + 1] = Math.max(0.01, mat.vScale ?? 1.0) * 230.0;
+      // Scale feature UVs proportionally to terrain dimensions (~2.1m per tile on both default 240x460 and 1000m MapNG)
+      data[r0 + 0] = Math.max(0.01, mat.uScale ?? 1.0) * Math.max(80.0, this.width * 0.46);
+      data[r0 + 1] = Math.max(0.01, mat.vScale ?? 1.0) * Math.max(80.0, this.length * 0.50);
       data[r0 + 2] = mat.uOffset ?? 0.0;
       data[r0 + 3] = mat.vOffset ?? 0.0;
 
@@ -7240,10 +7247,11 @@ export class TerrainGrid {
 
     if (effectiveMask && !this.playCorridorBounds) {
       for (const feat of this.stampedFeatures) {
-        const minX = Math.max(0, Math.floor((feat.centerX - feat.width * 0.5 - 6) / this.cellSize));
-        const maxX = Math.min(this.gridX - 1, Math.ceil((feat.centerX + feat.width * 0.5 + 6) / this.cellSize));
-        const minZ = Math.max(0, Math.floor((feat.centerZ - feat.length * 0.5 - 6) / this.cellSize));
-        const maxZ = Math.min(this.gridZ - 1, Math.ceil((feat.centerZ + feat.length * 0.5 + 6) / this.cellSize));
+        const maxHalf = Math.max(feat.width, feat.length) * 0.5 + 8;
+        const minX = Math.max(0, Math.floor((feat.centerX - maxHalf) / this.cellSize));
+        const maxX = Math.min(this.gridX - 1, Math.ceil((feat.centerX + maxHalf) / this.cellSize));
+        const minZ = Math.max(0, Math.floor((feat.centerZ - maxHalf) / this.cellSize));
+        const maxZ = Math.min(this.gridZ - 1, Math.ceil((feat.centerZ + maxHalf) / this.cellSize));
         for (let z = minZ; z <= maxZ; z++) {
           const rowOff = z * this.gridX;
           for (let x = minX; x <= maxX; x++) {

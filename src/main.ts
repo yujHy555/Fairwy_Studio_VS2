@@ -2805,12 +2805,24 @@ class FairwayStudioApp {
           this.updateDevStats();
         }
       } else {
+        let initialRotRad = 0;
+        if (p.surfaceType === SurfaceType.TEE && this.courseManager) {
+          const hole = this.courseManager.currentHole;
+          const targetPt =
+            hole.waypoints && hole.waypoints.length > 0
+              ? hole.waypoints[0]
+              : hole.pinPosition ?? { x: gx, y: 0, z: gz + 120 };
+          const headingRad = Math.atan2(targetPt.x - gx, targetPt.z - gz);
+          initialRotRad = -headingRad;
+          hole.customTeeHeadingRad = headingRad;
+          hole.hasCustomTeePosition = false;
+        }
         this.terrain.stampFeature(
           gx,
           gz,
           p.width,
           p.length,
-          0,
+          initialRotRad,
           p.surfaceType,
           p.depthProfile ?? (p.surfaceType === SurfaceType.WATER ? -2.2 : 0),
           p.lipHeight ?? 0,
@@ -3162,6 +3174,15 @@ class FairwayStudioApp {
     this.gizmoManager.scaleGizmoEnabled = false;
   }
 
+  private syncGizmoAxisLocks() {
+    const rotGizmo = this.gizmoManager?.gizmos.rotationGizmo;
+    if (!rotGizmo) return;
+    const isCourseFeature = Boolean(this.featureGizmoProxy && this.selectedMesh === this.featureGizmoProxy);
+    if (rotGizmo.xGizmo) rotGizmo.xGizmo.isEnabled = !isCourseFeature;
+    if (rotGizmo.zGizmo) rotGizmo.zGizmo.isEnabled = !isCourseFeature;
+    if (rotGizmo.yGizmo) rotGizmo.yGizmo.isEnabled = true;
+  }
+
   private setGizmoMode(mode: 'none' | 'position' | 'rotation' | 'scale') {
     this.activeGizmoMode = mode;
     if (!this.gizmoManager) this.setupGizmoManager();
@@ -3176,6 +3197,7 @@ class FairwayStudioApp {
     } else {
       this.gizmoManager.attachToMesh(null);
     }
+    this.syncGizmoAxisLocks();
     this.ui.setGizmoModeButton(mode);
   }
 
@@ -3323,6 +3345,7 @@ class FairwayStudioApp {
     } else {
       this.gizmoManager.attachToMesh(null);
     }
+    this.syncGizmoAxisLocks();
     this.ui.updateDevSelectedObject(mesh, this.canDeleteMesh(mesh), mesh === this.featureGizmoProxy);
     this.ui.updateDevObjectList(
       this.getSelectable3DModels().map(m => ({ id: m.id, label: m.label })),
@@ -3437,9 +3460,9 @@ class FairwayStudioApp {
     this.featureGizmoProxy.setEnabled(true);
     const elev = this.terrain.getElevation(feat.centerX, feat.centerZ);
     this.featureGizmoProxy.position.set(feat.centerX, elev + 0.15, feat.centerZ);
-    this.featureGizmoProxy.rotation.y = feat.rotationRad;
+    this.featureGizmoProxy.rotation.set(0, -feat.rotationRad, 0);
     if (this.featureGizmoProxy.rotationQuaternion) {
-      this.featureGizmoProxy.rotationQuaternion = Quaternion.RotationYawPitchRoll(feat.rotationRad, 0, 0);
+      this.featureGizmoProxy.rotationQuaternion = Quaternion.RotationYawPitchRoll(-feat.rotationRad, 0, 0);
     }
     this.featureGizmoProxy.name = feat.name || `${feat.surfaceType} Feature`;
 
@@ -3485,7 +3508,9 @@ class FairwayStudioApp {
     const newZ = this.featureGizmoProxy.position.z;
     let proxyYaw = this.featureGizmoProxy.rotation.y;
     if (this.featureGizmoProxy.rotationQuaternion) {
-      proxyYaw = this.featureGizmoProxy.rotationQuaternion.toEulerAngles().y;
+      // Extract pure Y-axis yaw from forward vector (immune to Euler pitch/roll gimbal flips)
+      const fwd = Vector3.Forward().applyRotationQuaternion(this.featureGizmoProxy.rotationQuaternion);
+      proxyYaw = Math.atan2(fwd.x, fwd.z);
     }
     // TerrainGrid uses counter-clockwise +rotationRad (BabylonJS left-handed -Y yaw)
     const newRot = -proxyYaw;

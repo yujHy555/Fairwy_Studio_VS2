@@ -531,14 +531,12 @@ export class CourseManager {
     let headingRad: number;
     if (feat.rotationRad !== undefined && Math.abs(feat.rotationRad) > 1e-4) {
       headingRad = -feat.rotationRad;
-    } else if (hole.customTeeHeadingRad !== undefined) {
-      headingRad = hole.customTeeHeadingRad;
-      feat.rotationRad = -headingRad;
     } else {
       headingRad = Math.atan2(targetPt.x - feat.centerX, targetPt.z - feat.centerZ);
       feat.rotationRad = -headingRad;
     }
     hole.customTeeHeadingRad = headingRad;
+    hole.hasCustomTeePosition = false;
     this.activeTeeMesh.rotationQuaternion = null;
     this.activeTeeMesh.rotation.set(0, headingRad, 0);
   }
