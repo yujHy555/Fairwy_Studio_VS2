@@ -39,7 +39,6 @@ import {
   UniformBuffer,
   MaterialDefines,
   ImageProcessingConfiguration,
-  DefaultRenderingPipeline,
   PostProcess,
   Effect
 } from '@babylonjs/core';
@@ -215,8 +214,9 @@ class FairwayStudioApp {
   private postSculptSyncTimer: number | null = null;
   private pendingSculptHistorySnap: ReturnType<FairwayStudioApp['captureHistorySnapshot']> | null = null;
   private pendingContourHistorySnap: ReturnType<FairwayStudioApp['captureHistorySnapshot']> | null = null;
-  private postPipeline: DefaultRenderingPipeline | null = null;
-  private anamorphicPostProcess: PostProcess | null = null;
+  private cinemaPostProcess: PostProcess | null = null;
+  private cinemaPostProcessAttached = false;
+  private cinemaPostProcessDesired = false;
   private solidViewOriginalMats = new Map<AbstractMesh, Material | null>();
   private solidClayMats: Record<string, StandardMaterial> = {};
   private userOverrodeGreenOverlays = false;
@@ -857,6 +857,8 @@ class FairwayStudioApp {
         this.scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
         this.scene.imageProcessingConfiguration.contrast = 1.18;
         this.scene.imageProcessingConfiguration.exposure = 1.0;
+        // Pre-compile unified cinema Bloom + Anamorphic Flare shader detached at boot (0ms cost, 0 black frames on toggle!)
+        this.ensureCinemaPostProcess();
 
         const skybox = this.scene.createDefaultSkybox(hdrTexture, true, 12000, 0.03);
         if (skybox) {
@@ -5450,44 +5452,68 @@ class FairwayStudioApp {
     }
   }
 
-  private applyPostProcessingSettings() {
-    const cam = this.cameraCtrl?.camera || this.scene.activeCamera;
-    if (!cam) return;
+  private ensureCinemaPostProcess() {
+    if (this.cinemaPostProcess) return;
+    if (!Effect.ShadersStore['fairwayCinemaPPFragmentShader']) {
+      Effect.ShadersStore['fairwayCinemaPPFragmentShader'] = `
+        precision highp float;
+        varying vec2 vUV;
+        uniform sampler2D textureSampler;
+        uniform vec4 uBloomParams; // x: weight (0 when OFF), y: threshold, z: spread, w: aspectInv
+        uniform vec4 uFlareParams; // x: intensity (0 when OFF), y: threshold, z: stretch, w: aspectInv
 
-    // 1. Half-resolution GPU-Optimized Triple-AAA Bloom (sRGB = zero HDR reallocation black flash, 100% OFF when disabled!)
-    const bloomOn = Boolean(this.currentEnvSettings.bloomEnabled);
-    if (bloomOn) {
-      if (!this.postPipeline) {
-        this.postPipeline = new DefaultRenderingPipeline('FairwayPostPipeline', false, this.scene, [cam]);
-        this.postPipeline.samples = 1;
-        this.postPipeline.fxaaEnabled = false;
-        this.postPipeline.imageProcessingEnabled = false; // Scene imageProcessing handles ACES tonemapping cleanly
-        this.postPipeline.bloomScale = 0.5; // Half-resolution for high FPS
-      }
-      this.postPipeline.bloomEnabled = true;
-      this.postPipeline.bloomWeight = Math.max(0.0, Math.min(1.5, this.currentEnvSettings.bloomWeight ?? 0.32));
-      this.postPipeline.bloomThreshold = Math.max(0.15, Math.min(1.5, this.currentEnvSettings.bloomThreshold ?? 0.85));
-      this.postPipeline.bloomKernel = Math.max(16, Math.min(128, this.currentEnvSettings.bloomKernel ?? 48));
-    } else if (this.postPipeline) {
-      this.postPipeline.bloomEnabled = false;
-      this.postPipeline.bloomWeight = 0;
-      this.postPipeline.dispose();
-      this.postPipeline = null;
-    }
+        vec3 extractSoftKnee(vec3 col, float thresh) {
+          vec3 safeCol = min(col, vec3(4.0));
+          float lum = dot(safeCol, vec3(0.2126, 0.7152, 0.0722));
+          float knee = max(0.05, thresh * 0.45);
+          float soft = clamp(lum - thresh + knee, 0.0, 2.0 * knee);
+          soft = (soft * soft) / (4.0 * knee + 0.0001);
+          float contrib = max(soft, lum - thresh) / max(lum, 0.0001);
+          return safeCol * max(0.0, contrib);
+        }
 
-    // 2. Next-Gen Single-Pass Half-Res Anamorphic Lens Flare PostProcess (<0.25ms GPU cost, 100% OFF when disabled!)
-    const anaOn = Boolean(this.currentEnvSettings.anamorphicEnabled);
-    if (anaOn) {
-      if (!Effect.ShadersStore['anamorphicFlareFragmentShader']) {
-        Effect.ShadersStore['anamorphicFlareFragmentShader'] = `
-          precision highp float;
-          varying vec2 vUV;
-          uniform sampler2D textureSampler;
-          uniform vec4 uFlareParams; // x: intensity, y: threshold, z: stretch, w: aspectInv
-          void main(void) {
-            vec4 baseCol = texture2D(textureSampler, vUV);
-            float intensity = uFlareParams.x;
-            float thresh = uFlareParams.y;
+        void main(void) {
+          vec4 baseCol = texture2D(textureSampler, vUV);
+          vec3 outCol = baseCol.rgb;
+          float aspectInv = uBloomParams.w;
+
+          // 1. Triple-AAA Dual-Ring Aspect-Corrected Soft-Knee Bloom (100% skipped when OFF)
+          float bloomWeight = uBloomParams.x;
+          if (bloomWeight > 0.001) {
+            float bThresh = uBloomParams.y;
+            // Spread normalized from kernel slider (16..128) to smooth screen-space radius
+            float radius = (uBloomParams.z / 48.0) * 0.016;
+            vec2 rInner = vec2(radius * 0.48 * aspectInv, radius * 0.48);
+            vec2 rOuter = vec2(radius * 1.15 * aspectInv, radius * 1.15);
+
+            vec3 bloomSum = extractSoftKnee(baseCol.rgb, bThresh) * 0.22;
+
+            // Inner 4-tap rotated diamond (tight halo core)
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( rInner.x,  rInner.y), 0.001, 0.999)).rgb, bThresh) * 0.11;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2(-rInner.x,  rInner.y), 0.001, 0.999)).rgb, bThresh) * 0.11;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( rInner.x, -rInner.y), 0.001, 0.999)).rgb, bThresh) * 0.11;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2(-rInner.x, -rInner.y), 0.001, 0.999)).rgb, bThresh) * 0.11;
+
+            // Outer 8-tap circular ring (wide cinema atmospheric glow)
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( rOuter.x,  0.0), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2(-rOuter.x,  0.0), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( 0.0,  rOuter.y), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( 0.0, -rOuter.y), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            vec2 rDiag = rOuter * 0.7071;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( rDiag.x,  rDiag.y), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2(-rDiag.x,  rDiag.y), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2( rDiag.x, -rDiag.y), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+            bloomSum += extractSoftKnee(texture2D(textureSampler, clamp(vUV + vec2(-rDiag.x, -rDiag.y), 0.001, 0.999)).rgb, bThresh) * 0.0425;
+
+            // Energy-conserving screen/additive blend so highlights glow cleanly without clipping
+            vec3 bloomContrib = bloomSum * bloomWeight * 0.85;
+            outCol += bloomContrib * (1.0 - clamp(outCol * 0.25, 0.0, 0.35));
+          }
+
+          // 2. Triple-AAA Cinema Anamorphic Lens Flare (100% skipped when OFF)
+          float flareIntensity = uFlareParams.x;
+          if (flareIntensity > 0.001) {
+            float fThresh = uFlareParams.y;
             float stretch = uFlareParams.z * 0.022;
             vec3 streak = vec3(0.0);
             float weights[6];
@@ -5503,45 +5529,97 @@ class FairwayStudioApp {
               vec2 sUv = vec2(clamp(vUV.x + offX, 0.001, 0.999), vUV.y);
               vec3 sCol = texture2D(textureSampler, sUv).rgb;
               float lum = dot(sCol, vec3(0.2126, 0.7152, 0.0722));
-              // Soft-knee cinema highlight extraction (avoids harsh clipping on clouds & white bunkers)
-              float bright = smoothstep(thresh * 0.85, thresh + 0.35, lum) * max(0.0, lum - thresh * 0.75);
+              float bright = smoothstep(fThresh * 0.85, fThresh + 0.35, lum) * max(0.0, lum - fThresh * 0.75);
               int idx = i < 0 ? -i : i;
               float w = (idx == 0) ? weights[0] : (idx == 1) ? weights[1] : (idx == 2) ? weights[2] : (idx == 3) ? weights[3] : (idx == 4) ? weights[4] : weights[5];
               vec3 tint = mix(vec3(1.0, 0.95, 0.84), vec3(0.36, 0.76, 1.0), float(idx) * 0.20);
               streak += sCol * bright * w * tint;
             }
-            gl_FragColor = vec4(baseCol.rgb + streak * intensity * 0.75, baseCol.a);
+            outCol += streak * flareIntensity * 0.75;
           }
-        `;
+
+          gl_FragColor = vec4(outCol, baseCol.a);
+        }
+      `;
+    }
+
+    // Create DETACHED (camera = null) and REUSABLE (reusable = true) so shader compiles off-camera with ZERO black flashes!
+    const pp = new PostProcess(
+      'FairwayCinemaPP',
+      'fairwayCinemaPP',
+      ['uBloomParams', 'uFlareParams'],
+      null,
+      1.0,
+      null,
+      Texture.BILINEAR_SAMPLINGMODE,
+      this.engine,
+      true
+    );
+
+    pp.onApply = (effect) => {
+      const engW = Math.max(1, this.engine.getRenderWidth());
+      const engH = Math.max(1, this.engine.getRenderHeight());
+      const aspectInv = engH / engW;
+      const bloomOn = Boolean(this.currentEnvSettings.bloomEnabled);
+      const anaOn = Boolean(this.currentEnvSettings.anamorphicEnabled);
+
+      effect.setFloat4(
+        'uBloomParams',
+        bloomOn ? Math.max(0.0, Math.min(1.5, this.currentEnvSettings.bloomWeight ?? 0.32)) : 0.0,
+        Math.max(0.1, Math.min(1.5, this.currentEnvSettings.bloomThreshold ?? 0.85)),
+        Math.max(16, Math.min(128, this.currentEnvSettings.bloomKernel ?? 48)),
+        aspectInv
+      );
+      effect.setFloat4(
+        'uFlareParams',
+        anaOn ? Math.max(0.0, Math.min(2.0, this.currentEnvSettings.anamorphicIntensity ?? 0.55)) : 0.0,
+        Math.max(0.2, Math.min(1.6, this.currentEnvSettings.anamorphicThreshold ?? 0.82)),
+        Math.max(0.2, Math.min(2.5, this.currentEnvSettings.anamorphicStretch ?? 1.10)),
+        aspectInv
+      );
+    };
+
+    this.cinemaPostProcess = pp;
+
+    // Attach ONLY after GLSL compilation completes -> guarantees 0 black frames!
+    const eff = pp.getEffect();
+    if (eff) {
+      eff.executeWhenCompiled(() => {
+        if (this.cinemaPostProcessDesired && !this.cinemaPostProcessAttached && this.cinemaPostProcess) {
+          const cam = this.cameraCtrl?.camera || this.scene.activeCamera;
+          if (cam) {
+            cam.attachPostProcess(this.cinemaPostProcess);
+            this.cinemaPostProcessAttached = true;
+          }
+        }
+      });
+    }
+  }
+
+  private applyPostProcessingSettings() {
+    const cam = this.cameraCtrl?.camera || this.scene.activeCamera;
+    if (!cam) return;
+
+    const bloomOn = Boolean(this.currentEnvSettings.bloomEnabled);
+    const anaOn = Boolean(this.currentEnvSettings.anamorphicEnabled);
+    const shouldAttach = bloomOn || anaOn;
+    this.cinemaPostProcessDesired = shouldAttach;
+
+    if (shouldAttach) {
+      this.ensureCinemaPostProcess();
+      if (this.cinemaPostProcess && !this.cinemaPostProcessAttached) {
+        if (this.cinemaPostProcess.isReady()) {
+          cam.attachPostProcess(this.cinemaPostProcess);
+          this.cinemaPostProcessAttached = true;
+        }
+        // If still compiling (first ~30ms after boot), executeWhenCompiled will attach it cleanly with zero black flash
       }
-      if (!this.anamorphicPostProcess) {
-        this.anamorphicPostProcess = new PostProcess(
-          'AnamorphicFlarePP',
-          'anamorphicFlare',
-          ['uFlareParams'],
-          null,
-          1.0,
-          cam,
-          Texture.BILINEAR_SAMPLINGMODE,
-          this.engine,
-          false
-        );
-        this.anamorphicPostProcess.onApply = (effect) => {
-          const engW = Math.max(1, this.engine.getRenderWidth());
-          const engH = Math.max(1, this.engine.getRenderHeight());
-          effect.setFloat4(
-            'uFlareParams',
-            Math.max(0.0, Math.min(2.0, this.currentEnvSettings.anamorphicIntensity ?? 0.55)),
-            Math.max(0.2, Math.min(1.6, this.currentEnvSettings.anamorphicThreshold ?? 0.82)),
-            Math.max(0.2, Math.min(2.5, this.currentEnvSettings.anamorphicStretch ?? 1.10)),
-            engH / engW
-          );
-        };
+    } else if (this.cinemaPostProcess) {
+      // 100% OFF: Detach from EVERY camera in the scene -> 0.00ms GPU cost, 100% raw scene pixels, ZERO black flash!
+      for (const c of this.scene.cameras) {
+        try { c.detachPostProcess(this.cinemaPostProcess); } catch { /* noop */ }
       }
-    } else if (this.anamorphicPostProcess) {
-      cam.detachPostProcess(this.anamorphicPostProcess);
-      this.anamorphicPostProcess.dispose(cam);
-      this.anamorphicPostProcess = null;
+      this.cinemaPostProcessAttached = false;
     }
   }
 
