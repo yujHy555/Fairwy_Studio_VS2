@@ -1941,6 +1941,52 @@ class FairwayStudioApp {
       }
     });
 
+    // Explore-mode Radar drag callbacks: allow dragging Ball & Flag anywhere on terrain when Tee Box / Green not yet added!
+    this.ui.overheadLayout?.setExploreDragCallbacks(
+      (wx: number, wz: number) => {
+        if (this.terrain.stampedFeatures.some((f) => f.surfaceType === SurfaceType.TEE)) return;
+        const hole = this.courseManager.currentHole;
+        const y = this.terrain.getElevation(wx, wz);
+        hole.teePosition = { x: wx, y, z: wz };
+        hole.hasCustomTeePosition = true;
+        this.ball.setPosition(wx, y + GOLF_CONSTANTS.BALL_RENDER_RADIUS, wz);
+        if (this.courseManager.activeTeeMesh && !this.courseManager.activeTeeMesh.isDisposed()) {
+          this.courseManager.activeTeeMesh.position.set(wx, y, wz);
+        }
+        const pin = hole.pinPosition;
+        this.currentAimAzimuth = (Math.atan2(pin.x - wx, pin.z - wz) * 180) / Math.PI;
+        this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
+        if (this.activeMode === 'play') {
+          this.cameraCtrl.snapAimBehindBall(this.ball.position, this.currentAimAzimuth);
+        }
+        if (this.aimSystem) {
+          this.aimSystem.aimHeadingDeg = this.currentAimAzimuth;
+          this.aimSystem.update(this.ball.position, this.activeClub, this.swingEngine.windSpeedMps, this.swingEngine.windHeadingDeg);
+        }
+        this.updateHUDDisplay();
+      },
+      (wx: number, wz: number) => {
+        if (this.terrain.stampedFeatures.some((f) => f.surfaceType === SurfaceType.GREEN)) return;
+        const hole = this.courseManager.currentHole;
+        const y = this.terrain.getElevation(wx, wz);
+        hole.pinPosition = { x: wx, y, z: wz };
+        if (this.courseManager.activePinMesh && !this.courseManager.activePinMesh.isDisposed()) {
+          this.courseManager.activePinMesh.position.set(wx, y, wz);
+        }
+        this.ball.setTargetPin(hole.pinPosition);
+        this.currentAimAzimuth = (Math.atan2(wx - this.ball.position.x, wz - this.ball.position.z) * 180) / Math.PI;
+        this.swingEngine.aimAzimuthDeg = this.currentAimAzimuth;
+        if (this.activeMode === 'play') {
+          this.cameraCtrl.setAimHeading(this.ball.position, this.currentAimAzimuth);
+        }
+        if (this.aimSystem) {
+          this.aimSystem.aimHeadingDeg = this.currentAimAzimuth;
+          this.aimSystem.update(this.ball.position, this.activeClub, this.swingEngine.windSpeedMps, this.swingEngine.windHeadingDeg);
+        }
+        this.updateHUDDisplay();
+      }
+    );
+
     // Club selector Prev / Next buttons
     document.getElementById('btn-prev-club')?.addEventListener('click', () => {
       const idx = GOLF_CLUBS.findIndex(c => c.id === this.activeClub.id);

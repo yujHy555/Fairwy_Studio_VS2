@@ -2022,6 +2022,7 @@ export class TerrainGrid {
   private lastEditedWaterFeatureIdx: number = -1;
   public activeSelectedFeatureIdx: number = -1;
   public activeSelectedSubMatId: FeatureSubMaterialId = 'surface';
+  private preferredGrassMatTemplate: Partial<FeatureMaterialSettings> | null = null;
   public groundMetallicLevel: number = 0.0;
   public terrainMaterial: PBRMaterial | StandardMaterial | null = null;
   private groundShaderPlugin: BunkerGrassExclusionPlugin | null = null;
@@ -4687,17 +4688,37 @@ export class TerrainGrid {
       };
     }
 
-    if (subId === 'first_cut') {
+    const applyPreferredGrass = (base: FeatureMaterialSettings): FeatureMaterialSettings => {
+      const tpl = this.preferredGrassMatTemplate;
+      if (!tpl) return base;
       return {
+        ...base,
+        colorTexLevel: tpl.colorTexLevel ?? base.colorTexLevel,
+        roughnessLevel: tpl.roughnessLevel ?? base.roughnessLevel,
+        metallicLevel: tpl.metallicLevel ?? base.metallicLevel,
+        normalLevel: tpl.normalLevel ?? base.normalLevel,
+        uScale: tpl.uScale ?? base.uScale,
+        vScale: tpl.vScale ?? base.vScale,
+        enableBaseColorTex: tpl.enableBaseColorTex ?? base.enableBaseColorTex,
+        enableRoughnessTex: tpl.enableRoughnessTex ?? base.enableRoughnessTex,
+        enableNormalTex: tpl.enableNormalTex ?? base.enableNormalTex,
+        customTextureUrls: tpl.customTextureUrls
+          ? { ...(base.customTextureUrls || {}), ...tpl.customTextureUrls }
+          : base.customTextureUrls
+      };
+    };
+
+    if (subId === 'first_cut') {
+      return applyPreferredGrass({
         baseColor: '#488a32',
-        colorTexLevel: 0.80,
-        roughnessLevel: 0.78,
+        colorTexLevel: 0.72,
+        roughnessLevel: 0.65,
         metallicLevel: 0.0,
         uScale: 1.0,
         vScale: 1.0,
         uOffset: 0.0,
         vOffset: 0.0,
-        normalLevel: 0.45,
+        normalLevel: 0.35,
         enableBaseColorTex: true,
         enableRoughnessTex: true,
         enableNormalTex: true,
@@ -4707,14 +4728,14 @@ export class TerrainGrid {
         showCollarRings: true,
         collarWidth: 1.2,
         customTextureUrls: {
-          color: '/textures/pbr_grass/grass_pbr_diff_1k.jpg',
-          colorName: 'grass_pbr_diff_1k.jpg',
+          color: '/textures/short_grass_01.jpg',
+          colorName: 'short_grass_01.jpg',
           roughness: '/textures/pbr_grass/grass_pbr_rough_512.jpg',
           roughnessName: 'grass_pbr_rough_512.jpg',
           normal: '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
           normalName: 'grass_pbr_nor_1k.jpg'
         }
-      };
+      });
     }
 
     if (subId === 'shore') {
@@ -4747,10 +4768,10 @@ export class TerrainGrid {
 
     switch (surface) {
       case SurfaceType.GREEN:
-        return {
+        return applyPreferredGrass({
           baseColor: '#28a745',
-          colorTexLevel: 0.68,
-          roughnessLevel: 0.62,
+          colorTexLevel: 0.72,
+          roughnessLevel: 0.65,
           metallicLevel: 0.0,
           uScale: 1.0,
           vScale: 1.0,
@@ -4773,7 +4794,7 @@ export class TerrainGrid {
             normal: '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
             normalName: 'grass_pbr_nor_1k.jpg'
           }
-        };
+        });
       case SurfaceType.BUNKER:
         return {
           baseColor: '#d8c28a',
@@ -4803,16 +4824,16 @@ export class TerrainGrid {
           }
         };
       case SurfaceType.FAIRWAY:
-        return {
+        return applyPreferredGrass({
           baseColor: '#38b000',
           colorTexLevel: 0.72,
-          roughnessLevel: 0.70,
+          roughnessLevel: 0.65,
           metallicLevel: 0.0,
           uScale: 1.0,
           vScale: 1.0,
           uOffset: 0.0,
           vOffset: 0.0,
-          normalLevel: 0.40,
+          normalLevel: 0.35,
           enableBaseColorTex: true,
           enableRoughnessTex: true,
           enableNormalTex: true,
@@ -4823,15 +4844,15 @@ export class TerrainGrid {
           collarWidth: 2.0,
           customTextureUrls: {
             color: '/textures/short_grass_01.jpg',
-            colorName: 'fairway_turf_01.jpg',
+            colorName: 'short_grass_01.jpg',
             roughness: '/textures/pbr_grass/grass_pbr_rough_512.jpg',
             roughnessName: 'grass_pbr_rough_512.jpg',
             normal: '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
             normalName: 'grass_pbr_nor_1k.jpg'
           }
-        };
+        });
       case SurfaceType.TEE:
-        return {
+        return applyPreferredGrass({
           baseColor: '#43a047',
           colorTexLevel: 0.72,
           roughnessLevel: 0.65,
@@ -4857,7 +4878,7 @@ export class TerrainGrid {
             normal: '/textures/pbr_grass/grass_pbr_nor_1k.jpg',
             normalName: 'grass_pbr_nor_1k.jpg'
           }
-        };
+        });
       case SurfaceType.WATER:
         return {
           baseColor: '#2d5a58',
@@ -5187,6 +5208,21 @@ export class TerrainGrid {
 
     if (subId === 'surface') {
       feat.materialSettings = targetMat;
+      // Preserve Championship Tee Box grass edits as the default template for all new feature grass materials
+      if (feat.surfaceType === SurfaceType.TEE) {
+        this.preferredGrassMatTemplate = {
+          colorTexLevel: targetMat.colorTexLevel,
+          roughnessLevel: targetMat.roughnessLevel,
+          metallicLevel: targetMat.metallicLevel,
+          normalLevel: targetMat.normalLevel,
+          uScale: targetMat.uScale,
+          vScale: targetMat.vScale,
+          enableBaseColorTex: targetMat.enableBaseColorTex,
+          enableRoughnessTex: targetMat.enableRoughnessTex,
+          enableNormalTex: targetMat.enableNormalTex,
+          customTextureUrls: targetMat.customTextureUrls ? { ...targetMat.customTextureUrls } : undefined
+        };
+      }
     } else if (subId === 'fringe' && (settings.showCollarRings !== undefined || settings.collarWidth !== undefined)) {
       if (!feat.materialSettings) feat.materialSettings = this.getDefaultFeatureMaterial(feat.surfaceType);
       if (settings.showCollarRings !== undefined) feat.materialSettings.showCollarRings = settings.showCollarRings;

@@ -41,6 +41,21 @@ export class OverheadHoleLayout {
     this.onOpenCourseGuide = cb;
   }
 
+  public setExploreDragCallbacks(
+    onDragBall?: (worldX: number, worldZ: number) => void,
+    onDragPin?: (worldX: number, worldZ: number) => void
+  ) {
+    this.onDragBallCallback = onDragBall;
+    this.onDragPinCallback = onDragPin;
+  }
+
+  public resetPanZoom() {
+    this.panOffsetRotX = 0;
+    this.panOffsetRotZ = 0;
+    this.panZoom = 1.0;
+    this.render();
+  }
+
   public isRadarVisible(): boolean {
     if (this.isMinimized || !this.lastData) return false;
     return true;
@@ -417,6 +432,18 @@ export class OverheadHoleLayout {
   private rotCenterX: number = 0;
   private rotCenterZ: number = 0;
   private rotMinZ: number = 0;
+  private panOffsetRotX: number = 0;
+  private panOffsetRotZ: number = 0;
+  private panZoom: number = 1.0;
+  private isRmbPanning: boolean = false;
+  private rmbLastX: number = 0;
+  private rmbLastY: number = 0;
+  private lastRmbDownTime: number = 0;
+  private dragIconMode: 'none' | 'ball' | 'pin' = 'none';
+  private lmbDownX: number = 0;
+  private lmbDownY: number = 0;
+  private onDragBallCallback?: (worldX: number, worldZ: number) => void;
+  private onDragPinCallback?: (worldX: number, worldZ: number) => void;
   private satImg: HTMLImageElement | null = null;
   private satImgUrl: string = '';
 
@@ -542,22 +569,158 @@ export class OverheadHoleLayout {
 
   private setupCanvasInteractions() {
     if (!this.canvas) return;
+    const canvas = this.canvas;
 
-    this.canvas.addEventListener('click', (e) => {
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+    });
+
+    const getCanvasCoords = (e: MouseEvent | PointerEvent | WheelEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        cx: ((e.clientX - rect.left) / Math.max(1, rect.width)) * this.canvasWidth,
+        cy: ((e.clientY - rect.top) / Math.max(1, rect.height)) * this.canvasHeight
+      };
+    };
+
+    const canDragBall = (): boolean => {
+      if (!this.lastData || !this.onDragBallCallback) return false;
+      return !this.lastData.features.some((f) => f.surfaceType === SurfaceType.TEE);
+    };
+
+    const canDragPin = (): boolean => {
+      if (!this.lastData || !this.onDragPinCallback) return false;
+      return !this.lastData.features.some((f) => f.surfaceType === SurfaceType.GREEN);
+    };
+
+    canvas.addEventListener('pointerdown', (e) => {
       if (!this.lastData) return;
-      const rect = this.canvas!.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
+      const { cx, cy } = getCanvasCoords(e);
 
-      const worldPos = this.canvasToWorld(cx, cy);
-      if (worldPos && this.onAimToPointCallback) {
-        this.onAimToPointCallback(worldPos.x, worldPos.z);
+      // RMB: Pan entire terrain (double-click RMB resets pan & zoom)
+      if (e.button === 2) {
+        e.preventDefault();
+        e.stopPropagation();
+        const now = performance.now();
+        if (now - this.lastRmbDownTime < 320) {
+          this.resetPanZoom();
+          this.lastRmbDownTime = 0;
+          return;
+        }
+        this.lastRmbDownTime = now;
+        this.isRmbPanning = true;
+        this.rmbLastX = cx;
+        this.rmbLastY = cy;
+        canvas.setPointerCapture?.(e.pointerId);
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+
+      // LMB: Check if clicking Ball or Flag icon to drag across terrain (when Tee Box / Green not yet added)
+      if (e.button === 0) {
+        this.lmbDownX = cx;
+        this.lmbDownY = cy;
+        const ballPt = this.worldToCanvas(this.lastData.ballPos.x, this.lastData.ballPos.z);
+        const { pin: effPin } = this.getEffectiveTeeAndPin();
+        const pinPt = this.worldToCanvas(effPin.x, effPin.z);
+
+        if (canDragBall() && Math.hypot(cx - ballPt.x, cy - ballPt.y) <= 20) {
+          this.dragIconMode = 'ball';
+          canvas.setPointerCapture?.(e.pointerId);
+          canvas.style.cursor = 'grabbing';
+          e.stopPropagation();
+          return;
+        }
+        if (canDragPin() && Math.hypot(cx - pinPt.x, cy - pinPt.y) <= 22) {
+          this.dragIconMode = 'pin';
+          canvas.setPointerCapture?.(e.pointerId);
+          canvas.style.cursor = 'grabbing';
+          e.stopPropagation();
+          return;
+        }
       }
     });
 
-    this.canvas.addEventListener('mousemove', (e) => {
+    canvas.addEventListener('pointermove', (e) => {
       if (!this.lastData) return;
-      const rect = this.canvas!.getBoundingClientRect();
+      const { cx, cy } = getCanvasCoords(e);
+
+      if (this.isRmbPanning) {
+        const dxPx = cx - this.rmbLastX;
+        const dyPx = cy - this.rmbLastY;
+        this.rmbLastX = cx;
+        this.rmbLastY = cy;
+        const sc = Math.max(0.05, this.viewScale);
+        this.panOffsetRotX -= dxPx / sc;
+        this.panOffsetRotZ += dyPx / sc;
+        this.render();
+        return;
+      }
+
+      if (this.dragIconMode !== 'none') {
+        const wp = this.canvasToWorld(cx, cy);
+        if (wp) {
+          const clampedX = Math.max(2, Math.min(this.lastData.terrainWidth - 2, wp.x));
+          const clampedZ = Math.max(2, Math.min(this.lastData.terrainLength - 2, wp.z));
+          if (this.dragIconMode === 'ball') {
+            this.onDragBallCallback?.(clampedX, clampedZ);
+          } else if (this.dragIconMode === 'pin') {
+            this.onDragPinCallback?.(clampedX, clampedZ);
+          }
+        }
+        return;
+      }
+
+      // Hover cursor feedback for draggable Ball / Flag icons
+      const ballPt = this.worldToCanvas(this.lastData.ballPos.x, this.lastData.ballPos.z);
+      const { pin: effPin } = this.getEffectiveTeeAndPin();
+      const pinPt = this.worldToCanvas(effPin.x, effPin.z);
+      if (
+        (canDragBall() && Math.hypot(cx - ballPt.x, cy - ballPt.y) <= 20) ||
+        (canDragPin() && Math.hypot(cx - pinPt.x, cy - pinPt.y) <= 22)
+      ) {
+        canvas.style.cursor = 'grab';
+      } else {
+        canvas.style.cursor = 'crosshair';
+      }
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (this.isRmbPanning && e.button === 2) {
+        this.isRmbPanning = false;
+        canvas.releasePointerCapture?.(e.pointerId);
+        canvas.style.cursor = 'crosshair';
+        return;
+      }
+      if (this.dragIconMode !== 'none' && e.button === 0) {
+        this.dragIconMode = 'none';
+        canvas.releasePointerCapture?.(e.pointerId);
+        canvas.style.cursor = 'crosshair';
+        return;
+      }
+      if (e.button === 0 && this.lastData) {
+        const { cx, cy } = getCanvasCoords(e);
+        if (Math.hypot(cx - this.lmbDownX, cy - this.lmbDownY) < 6) {
+          const worldPos = this.canvasToWorld(cx, cy);
+          if (worldPos && this.onAimToPointCallback) {
+            this.onAimToPointCallback(worldPos.x, worldPos.z);
+          }
+        }
+      }
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      if (!this.lastData) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      this.panZoom = Math.max(0.32, Math.min(3.5, this.panZoom * factor));
+      this.render();
+    }, { passive: false });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!this.lastData) return;
+      const rect = canvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
       const worldPos = this.canvasToWorld(cx, cy);
@@ -686,8 +849,8 @@ export class OverheadHoleLayout {
     const curHalfW = (maxRX - minRX) * 0.5 + 24;
     const effHalfW = Math.max(minHalfW, curHalfW);
 
-    this.rotCenterX = (minRX + maxRX) * 0.5;
-    this.rotCenterZ = (minRZ + maxRZ) * 0.5;
+    this.rotCenterX = (minRX + maxRX) * 0.5 + this.panOffsetRotX;
+    this.rotCenterZ = (minRZ + maxRZ) * 0.5 + this.panOffsetRotZ;
     this.rotMinZ = minRZ;
 
     const totalSpanX = effHalfW * 2;
@@ -698,7 +861,7 @@ export class OverheadHoleLayout {
 
     const scaleX = availW / totalSpanX;
     const scaleZ = availH / totalSpanZ;
-    this.viewScale = Math.min(scaleX, scaleZ);
+    this.viewScale = Math.min(scaleX, scaleZ) * this.panZoom;
   }
 
   private getEffectiveTeeAndPin(): { tee: { x: number; z: number }; pin: { x: number; z: number } } {

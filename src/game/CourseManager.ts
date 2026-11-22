@@ -506,7 +506,7 @@ export class CourseManager {
     }
   }
 
-  public ensureTeeMarkersForFeature(feat: { centerX: number; centerZ: number }) {
+  public ensureTeeMarkersForFeature(feat: { centerX: number; centerZ: number; rotationRad?: number }) {
     const hole = this.currentHole;
     const teeY = this.terrain.getElevation(feat.centerX, feat.centerZ);
     hole.teePosition = { x: feat.centerX, y: teeY, z: feat.centerZ };
@@ -526,7 +526,19 @@ export class CourseManager {
       targetPt.x,
       targetPt.z
     );
-    const headingRad = Math.atan2(targetPt.x - feat.centerX, targetPt.z - feat.centerZ);
+    // Keep the blue hitting-direction arrow 100% consistent with feat.rotationRad across creation & transforms:
+    // headingRad = -feat.rotationRad so +Z local arrow always matches the Tee Box's forward heading.
+    let headingRad: number;
+    if (feat.rotationRad !== undefined && Math.abs(feat.rotationRad) > 1e-4) {
+      headingRad = -feat.rotationRad;
+    } else if (hole.customTeeHeadingRad !== undefined) {
+      headingRad = hole.customTeeHeadingRad;
+      feat.rotationRad = -headingRad;
+    } else {
+      headingRad = Math.atan2(targetPt.x - feat.centerX, targetPt.z - feat.centerZ);
+      feat.rotationRad = -headingRad;
+    }
+    hole.customTeeHeadingRad = headingRad;
     this.activeTeeMesh.rotationQuaternion = null;
     this.activeTeeMesh.rotation.set(0, headingRad, 0);
   }
@@ -553,7 +565,7 @@ export class CourseManager {
     }
     this.activePinMesh = this.scenery.createPinAndCup(feat.centerX, pinY, feat.centerZ, hole.number);
 
-    if (this.activeTeeMesh && hole.teePosition) {
+    if (this.activeTeeMesh && hole.teePosition && hole.customTeeHeadingRad === undefined) {
       const targetPt = hole.waypoints && hole.waypoints.length > 0 ? hole.waypoints[0] : hole.pinPosition;
       this.activeTeeMesh.rotation.y = Math.atan2(targetPt.x - hole.teePosition.x, targetPt.z - hole.teePosition.z);
     }
