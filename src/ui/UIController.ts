@@ -736,6 +736,7 @@ export class UIController {
               <span id="overhead-hole-name" class="overhead-hole-name">DEMO HOLE • PAR 4</span>
             </div>
             <div class="overhead-header-actions">
+              <button id="btn-overhead-rotate-15" class="btn-overhead-tool" title="Rotate Radar Map +15° (Right-click to reset)">↻15°</button>
               <button id="btn-overhead-expand-guide" class="btn-overhead-tool" title="Open Interactive Course Guide [L]">🗺️</button>
               <button id="btn-toggle-overhead-min" class="btn-overhead-tool" title="Minimize / Expand Overhead View [M]">▾</button>
             </div>

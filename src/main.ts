@@ -756,8 +756,8 @@ class FairwayStudioApp {
         if (CascadedShadowGenerator.IsSupported) {
           const csm = new CascadedShadowGenerator(profile.shadowMapSize, this.sunLight);
           csm.numCascades = profile.shadowCascades;
-          csm.lambda = 0.62;
-          csm.shadowMaxZ = 480;
+          csm.lambda = 0.72; // Tighter near-camera cascade so Tee Markers, Aiming Arrow & Ball cast crisp shadows on the Tee Box
+          csm.shadowMaxZ = 420;
           csm.stabilizeCascades = true;
           csm.depthClamp = true;
           csm.autoCalcDepthBounds = false;
@@ -768,8 +768,8 @@ class FairwayStudioApp {
             profile.shadowFilterQuality === 'medium'
               ? CascadedShadowGenerator.QUALITY_MEDIUM
               : CascadedShadowGenerator.QUALITY_LOW;
-          csm.bias = 0.0006;
-          csm.normalBias = 0.012;
+          csm.bias = 0.00025;
+          csm.normalBias = 0.004;
           // Opaque depth-only shadow pass on integrated/laptop/mobile GPUs is 2-3x faster on foliage
           csm.transparencyShadow = profile.tier === 'high';
           csm.splitFrustum();
@@ -949,7 +949,6 @@ class FairwayStudioApp {
         lower.includes('comet') ||
         lower.includes('gizmo') ||
         lower.includes('outline') ||
-        lower.includes('teedirectionarrow') ||
         lower.startsWith('water_') ||
         (lower.startsWith('cup_') && lower !== 'cup_modernaimchevron')
       ) {

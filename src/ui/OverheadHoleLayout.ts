@@ -129,13 +129,16 @@ export class OverheadHoleLayout {
     }
   }
 
+  private userRotationOffsetDeg = 0;
+
   private ensureModeControlsBound() {
     if (this.modeControlsBound) return;
     const btnGraphic = document.getElementById('btn-overhead-mode-graphic');
     const btnRadar = document.getElementById('btn-overhead-mode-radar');
     const btnDist = document.getElementById('btn-overhead-dist-toggle');
     const btnExpand = document.getElementById('btn-overhead-expand-guide');
-    if (!btnGraphic && !btnRadar && !btnExpand) return;
+    const btnRotate15 = document.getElementById('btn-overhead-rotate-15');
+    if (!btnGraphic && !btnRadar && !btnExpand && !btnRotate15) return;
 
     this.modeControlsBound = true;
     btnGraphic?.addEventListener('click', (e) => {
@@ -153,6 +156,17 @@ export class OverheadHoleLayout {
     btnExpand?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.onOpenCourseGuide?.();
+    });
+    btnRotate15?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.userRotationOffsetDeg = (this.userRotationOffsetDeg + 15) % 360;
+      this.render();
+    });
+    btnRotate15?.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.userRotationOffsetDeg = 0;
+      this.render();
     });
   }
 
@@ -808,11 +822,11 @@ export class OverheadHoleLayout {
     this.viewOriginZ = tee.z;
     const ball = this.lastData.ballPos;
 
-    // Angle of vector from Tee to Pin (oriented vertically: Tee near bottom, Pin near top)
+    // Angle of vector from Tee to Pin (oriented vertically: Tee near bottom, Pin near top) + user 15° increments
     const dx = pin.x - tee.x;
     const dz = pin.z - tee.z;
     const holeDist = Math.hypot(dx, dz);
-    this.viewAngle = holeDist > 2 ? -Math.atan2(dx, dz) : 0;
+    this.viewAngle = (holeDist > 2 ? -Math.atan2(dx, dz) : 0) + (this.userRotationOffsetDeg * Math.PI) / 180;
 
     const cosA = Math.cos(this.viewAngle);
     const sinA = Math.sin(this.viewAngle);
@@ -1146,6 +1160,100 @@ export class OverheadHoleLayout {
     ctx.shadowBlur = 8;
     ctx.fill();
     ctx.restore();
+
+    // 8. Accurate World-North Compass Rose + Rotation Offset Readout
+    this.drawRadarCompass(ctx);
+  }
+
+  private drawRadarCompass(ctx: CanvasRenderingContext2D) {
+    const cx = 28;
+    const cy = 28;
+    const r = 18;
+
+    ctx.save();
+    // Translucent dark bezel
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(8, 15, 28, 0.78)';
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+    ctx.stroke();
+
+    // World North (+Z) projects in canvas coordinates to (-sin(viewAngle), -cos(viewAngle))
+    // Rotate canvas so local -Y aligns with true World North
+    ctx.translate(cx, cy);
+    ctx.rotate(-this.viewAngle);
+
+    // Subtle E / W / S tick marks
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.55)';
+    ctx.lineWidth = 1;
+    for (const ang of [Math.PI * 0.5, Math.PI, Math.PI * 1.5]) {
+      ctx.beginPath();
+      ctx.moveTo(Math.sin(ang) * (r - 5), -Math.cos(ang) * (r - 5));
+      ctx.lineTo(Math.sin(ang) * (r - 2), -Math.cos(ang) * (r - 2));
+      ctx.stroke();
+    }
+
+    // North pointer (crimson)
+    ctx.beginPath();
+    ctx.moveTo(0, -(r - 4));
+    ctx.lineTo(3.8, 0);
+    ctx.lineTo(-3.8, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#ef4444';
+    ctx.fill();
+
+    // South pointer (cool silver)
+    ctx.beginPath();
+    ctx.moveTo(0, r - 4);
+    ctx.lineTo(3.2, 0);
+    ctx.lineTo(-3.2, 0);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(203, 213, 225, 0.72)';
+    ctx.fill();
+
+    // Center pivot dot
+    ctx.beginPath();
+    ctx.arc(0, 0, 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    // Upright 'N' label anchored just outside the North tip
+    ctx.rotate(this.viewAngle);
+    const nDist = r - 7;
+    const nx = -Math.sin(this.viewAngle) * (nDist + 10);
+    const ny = -Math.cos(this.viewAngle) * (nDist + 10);
+    ctx.font = '800 9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fca5a5';
+    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+    ctx.shadowBlur = 3;
+    ctx.fillText('N', nx, ny);
+    ctx.restore();
+
+    // Show user rotation offset pill when rotated away from 0°
+    if (this.userRotationOffsetDeg !== 0) {
+      ctx.save();
+      const label = `+${this.userRotationOffsetDeg}°`;
+      ctx.font = '700 9px sans-serif';
+      const tw = ctx.measureText(label).width;
+      const px = cx - tw * 0.5 - 5;
+      const py = cy + r + 5;
+      ctx.fillStyle = 'rgba(8, 15, 28, 0.82)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(px, py, tw + 10, 14, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#38bdf8';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, cx, py + 7);
+      ctx.restore();
+    }
   }
 
   private drawFeatureOnOverhead(ctx: CanvasRenderingContext2D, feat: StampedFeatureRecord) {

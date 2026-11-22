@@ -720,9 +720,12 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                 float rBlendOffset = (showCollar > 0.5) ? (lipW + blendWidth) : sandFeather;
                 if (d > rBlendOffset) continue;
 
-                float sWeight = 1.0 - smoothstep(-sandFeather, sandFeather, d);
+                // C2 quintic smoothstep for ultra-smooth sand-to-grass lip transition (zero jagged/blocky steps)
+                float sT = clamp((d + sandFeather) / max(0.01, 2.0 * sandFeather), 0.0, 1.0);
+                float sWeight = 1.0 - sT * sT * sT * (sT * (sT * 6.0 - 15.0) + 10.0);
+                float bT = clamp((d - lipW) / max(0.01, blendWidth), 0.0, 1.0);
                 float bWeight = (showCollar > 0.5)
-                  ? (d <= lipW ? 1.0 : (1.0 - smoothstep(lipW, rBlendOffset, d)))
+                  ? (d <= lipW ? 1.0 : (1.0 - bT * bT * bT * (bT * (bT * 6.0 - 15.0) + 10.0)))
                   : sWeight;
 
                 if (bWeight > outBunkerWeight) {
@@ -906,7 +909,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               out float outLocalX,
               out float outLocalZ,
               out float outHalfW,
-              out vec3 outStripeParams
+              out vec3 outStripeParams,
+              out vec2 outRotCS
             ) {
               outTotalWeight = 0.0;
               outTeeWeight = 0.0;
@@ -917,6 +921,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outLocalZ = 0.0;
               outHalfW = 5.0;
               outStripeParams = vec3(0.0);
+              outRotCS = vec2(1.0, 0.0);
 
               int teeCount = int(tMeta.x + 0.5);
               float worldX = rawTerrainUV.x * tMeta.y;
@@ -967,6 +972,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
                   outLocalZ = lz;
                   outHalfW = halfW;
                   outStripeParams = tStr.xyz;
+                  outRotCS = tRC.xy;
                 }
               }
             }
@@ -1217,6 +1223,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             float tLocalZ;
             float tHalfW;
             vec3 tStripeParams;
+            vec2 tRotCS;
             evaluateTeeSDF(
               vRawTerrainUV,
               uTeeMeta,
@@ -1228,12 +1235,20 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               tLocalX,
               tLocalZ,
               tHalfW,
-              tStripeParams
+              tStripeParams,
+              tRotCS
             );
 
             if (tSurfLid > 0.5 && tTotalWeight > 0.001) {
+              // Rotate Tee Box UVs & Tangent Frame together as a single unit with the Tee Box orientation
+              vec2 teeRotUv = vec2(tLocalX / max(1.0, uTeeMeta.y) + 0.5, tLocalZ / max(1.0, uTeeMeta.z) + 0.5);
+              vec3 teeRawT = vec3(tRotCS.x, 0.0, -tRotCS.y);
+              vec3 teeT = normalize(teeRawT - geomN * dot(teeRawT, geomN));
+              vec3 teeB = normalize(cross(geomN, teeT));
+              mat3 teeTBN = mat3(teeT, teeB, geomN);
+
               vec3 tSurfTex; float tSurfMix; vec3 tSurfNorm; float tSR; float tSM; vec3 tSurfBase;
-              evalSingleLayer(tSurfLid, vRawTerrainUV, terrainTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
+              evalSingleLayer(tSurfLid, teeRotUv, teeTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
               vec3 tSurfCol = mix(tSurfBase, tSurfTex, tSurfMix);
 
               if (tStripeParams.x > 0.5 && tStripeParams.y > 0.05 && tStripeParams.z > 0.001) {
@@ -1251,7 +1266,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
               if (tShowCollar > 0.5 && tFringeLid > 0.5) {
                 vec3 tFrTex; float tFrMix; vec3 tFrNorm; float tFR; float tFM; vec3 tFrBase;
-                evalSingleLayer(tFringeLid, vRawTerrainUV, terrainTBN, geomN, slopeSafe, tFrTex, tFrMix, tFrNorm, tFR, tFM, tFrBase);
+                evalSingleLayer(tFringeLid, teeRotUv, teeTBN, geomN, slopeSafe, tFrTex, tFrMix, tFrNorm, tFR, tFM, tFrBase);
                 vec3 tFringeCol = mix(tFrBase, tFrTex, tFrMix);
                 #if defined(VERTEXCOLOR) || defined(VERTEXALPHA)
                   tFringeCol *= vColor.rgb;
@@ -1595,12 +1610,12 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             // Layer 0b: Analytical Tee Box roughness & metallic
             float spTTotalW; float spTWeight;
             float spTSurfLid; float spTFringeLid; float spTShowCollar;
-            float spTLocalX; float spTLocalZ; float spTHalfW; vec3 spTStripe;
+            float spTLocalX; float spTLocalZ; float spTHalfW; vec3 spTStripe; vec2 spTRotCS;
             evaluateTeeSDF(
               vRawTerrainUV, uTeeMeta,
               spTTotalW, spTWeight,
               spTSurfLid, spTFringeLid, spTShowCollar,
-              spTLocalX, spTLocalZ, spTHalfW, spTStripe
+              spTLocalX, spTLocalZ, spTHalfW, spTStripe, spTRotCS
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
@@ -1789,12 +1804,12 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
             float spTTotalW; float spTWeight;
             float spTSurfLid; float spTFringeLid; float spTShowCollar;
-            float spTLocalX; float spTLocalZ; float spTHalfW; vec3 spTStripe;
+            float spTLocalX; float spTLocalZ; float spTHalfW; vec3 spTStripe; vec2 spTRotCS;
             evaluateTeeSDF(
               vRawTerrainUV, uTeeMeta,
               spTTotalW, spTWeight,
               spTSurfLid, spTFringeLid, spTShowCollar,
-              spTLocalX, spTLocalZ, spTHalfW, spTStripe
+              spTLocalX, spTLocalZ, spTHalfW, spTStripe, spTRotCS
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
@@ -3340,7 +3355,7 @@ export class TerrainGrid {
         const fringeId = this.getOrRegisterLayerId(featIdx, 'fringe');
         const showCollar = fringeMat.showCollarRings !== false && surfMat.showCollarRings !== false;
         const collarWidth = fringeMat.collarWidth ?? surfMat.collarWidth ?? 1.20;
-        const sandFeatherHalf = showCollar ? 0.24 : 0.38;
+        const sandFeatherHalf = showCollar ? 0.52 : 0.68;
 
         const i4 = bunkerCount * 4;
         bData[i4 + 0] = feat.centerX;

@@ -151,18 +151,18 @@ export class Ball {
     this.mesh.receiveShadows = true;
     this.mesh.renderingGroupId = 0; // Standard scene depth testing so scenery and trees occlude the ball naturally
 
-    // Subtle radial turf-contact shadow disc directly under the ball so it sits crisply on the surface
+    // Crisp radial turf-contact shadow disc directly under the ball so it sits grounded on the Tee Box & turf
     this.contactShadowMesh = MeshBuilder.CreateGround('cup_ballContactShadow', {
-      width: GOLF_CONSTANTS.BALL_RENDER_RADIUS * 2.5,
-      height: GOLF_CONSTANTS.BALL_RENDER_RADIUS * 2.5
+      width: GOLF_CONSTANTS.BALL_RENDER_RADIUS * 3.2,
+      height: GOLF_CONSTANTS.BALL_RENDER_RADIUS * 3.2
     }, this.scene);
     this.contactShadowMesh.isPickable = false;
     const csTex = new DynamicTexture('ballContactShadowTex', 64, this.scene, false);
     const csCtx = csTex.getContext() as CanvasRenderingContext2D;
     const grad = csCtx.createRadialGradient(32, 32, 2, 32, 32, 30);
-    grad.addColorStop(0, 'rgba(8, 22, 6, 0.62)');
-    grad.addColorStop(0.55, 'rgba(8, 22, 6, 0.28)');
-    grad.addColorStop(1, 'rgba(8, 22, 6, 0.0)');
+    grad.addColorStop(0, 'rgba(6, 16, 4, 0.78)');
+    grad.addColorStop(0.55, 'rgba(6, 16, 4, 0.38)');
+    grad.addColorStop(1, 'rgba(6, 16, 4, 0.0)');
     csCtx.fillStyle = grad;
     csCtx.fillRect(0, 0, 64, 64);
     csTex.hasAlpha = true;
@@ -172,9 +172,10 @@ export class Ball {
     csMat.diffuseTexture = csTex;
     csMat.opacityTexture = csTex;
     csMat.disableLighting = true;
-    csMat.emissiveColor = new Color3(0.03, 0.08, 0.02);
+    csMat.emissiveColor = new Color3(0.02, 0.05, 0.01);
     csMat.transparencyMode = Material.MATERIAL_ALPHABLEND;
-    csMat.zOffset = -1;
+    csMat.disableDepthWrite = true;
+    csMat.zOffset = -2;
     this.contactShadowMesh.material = csMat;
 
     // Toptracer luminous billboarded ribbon material (uses RGBA vertex colors for smooth fade & zero clipping)
