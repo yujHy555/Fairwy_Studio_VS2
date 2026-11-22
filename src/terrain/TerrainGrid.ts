@@ -1184,12 +1184,16 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               vec3 refBase = max(vec3(0.08), layerBase);
             #endif
 
-            // Preserve fairway mowing stripe modulation cleanly even when full PBR grass texture is active!
-            float splatLum = dot(pureSplat.rgb, vec3(0.299, 0.587, 0.114));
+            // Preserve fairway mowing stripe modulation cleanly even when full PBR grass texture is active,
+            // and un-premultiply splat RGB at feathered borders to completely eliminate dark jagged fringes!
+            float splatAlpha = pureSplat.a;
+            vec3 cleanSplatRgb = splatAlpha > 0.02 ? min(vec3(1.0), pureSplat.rgb / max(0.12, splatAlpha)) : refBase;
+            float splatLum = dot(cleanSplatRgb, vec3(0.299, 0.587, 0.114));
             float baseLum = max(0.06, dot(refBase, vec3(0.299, 0.587, 0.114)));
-            float stripeFactor = clamp(splatLum / baseLum, 0.72, 1.32);
-            vec3 featureColor = mix(pureSplat.rgb, layerTexRgb * stripeFactor, layerColMix);
-            float featureBlend = clamp((pureSplat.a - 0.52) / 0.48, 0.0, 1.0);
+            float rawStripeFactor = clamp(splatLum / baseLum, 0.78, 1.28);
+            float stripeFactor = mix(1.0, rawStripeFactor, smoothstep(0.45, 0.96, splatAlpha));
+            vec3 featureColor = mix(cleanSplatRgb, layerTexRgb * stripeFactor, layerColMix);
+            float featureBlend = smoothstep(0.06, 0.94, splatAlpha);
 
             vec3 hostTerrainColor = mix(mainGroundColor, featureColor, featureBlend);
             vec3 hostNormal = normalize(mix(groundN, layerNorm, featureBlend));
@@ -2550,16 +2554,16 @@ export class TerrainGrid {
 
           if (rMeters <= rSand) {
             const normR = rMeters / Math.max(0.001, rSand);
-            if (normR <= 0.60) {
+            if (normR <= 0.45) {
               h = sandFloorY;
             } else {
-              const tFloor = (normR - 0.60) / 0.40;
+              const tFloor = (normR - 0.45) / 0.55;
               const sFloor = 0.5 * (1.0 - Math.cos(tFloor * Math.PI));
               h = sandFloorY * (1.0 - sFloor) + sandEdgeY * sFloor;
             }
           } else if (showCollar && lipWidth > 0.05) {
-            // Crisp revetted sod lip crest (8cm to 14cm) following the local ground surface
-            const lipRise = Math.max(0.08, Math.min(0.14, (feat.lipHeight ?? 0.60) * 0.14));
+            // Smooth revetted sod lip crest following the local ground surface without steep triangular dimples
+            const lipRise = Math.max(0.05, Math.min(0.10, (feat.lipHeight ?? 0.55) * 0.10));
             const lipCrestY = localGroundY + lipRise;
 
             if (rMeters <= rLip) {
@@ -6940,14 +6944,16 @@ export class TerrainGrid {
     maskG: number | null,
     writeLayerId: boolean = true,
     sandOwnerId: number = 0,
-    splatAlpha: number = 1.0
+    splatAlpha: number = 1.0,
+    featherPx: number = 0
   ) {
     // 1. Paint smooth Base Color onto splatCanvas (full-resolution GPU textures mix on top in BunkerGrassExclusionPlugin)
     this.traceLocalMeterPolygon(ctx, pts, centerX, centerZ, rotRad, sX, sZ);
     ctx.fillStyle = mat.baseColor || fallbackColor;
-    if (splatAlpha < 0.999) {
+    if (splatAlpha < 0.999 || featherPx > 0.1) {
       ctx.save();
-      ctx.globalAlpha = splatAlpha;
+      if (splatAlpha < 0.999) ctx.globalAlpha = splatAlpha;
+      if (featherPx > 0.1) ctx.filter = `blur(${featherPx.toFixed(1)}px)`;
       ctx.fill();
       ctx.restore();
     } else {
@@ -7092,25 +7098,25 @@ export class TerrainGrid {
     if (showCollar && fringeWidth > 0.02) {
       const firstCutWidth = fringeWidth * 2.1;
 
-      // 1. Continuous Uniform First-Cut Ring (independent FirstCut layerId)
+      // 1. Continuous Uniform First-Cut Ring (silky 4.5px Gaussian feather into rough/main terrain)
       const fairwayFirstCutRing = this.computeUniformOffsetPolygon(fairwayLoopMeters, firstCutWidth);
       this.fillSubLayerPolygon(
         ctx, fairwayFirstCutRing, 0, 0, 0, sX, sZ,
-        '#488a32', firstCutMat, firstCutId, 0, 0
+        '#488a32', firstCutMat, firstCutId, 0, 0, true, 0, 1.0, 4.5
       );
 
-      // 1b. Continuous Uniform Fringe Ring (independent Fringe layerId)
+      // 1b. Continuous Uniform Fringe Ring (smooth 2.5px feather into First Cut)
       const fairwayFringeRing = this.computeUniformOffsetPolygon(fairwayLoopMeters, fringeWidth);
       this.fillSubLayerPolygon(
         ctx, fairwayFringeRing, 0, 0, 0, sX, sZ,
-        '#35a043', fringeMat, fringeId, 0, 0
+        '#35a043', fringeMat, fringeId, 0, 0, true, 0, 1.0, 2.5
       );
     }
 
-    // 2. Continuous AAA Dogleg Fairway Body (independent Fairway layerId)
+    // 2. Continuous AAA Dogleg Fairway Body (smooth 2.0px feather into Fringe)
     this.fillSubLayerPolygon(
       ctx, fairwayLoopMeters, 0, 0, 0, sX, sZ,
-      '#38b000', fairwayMat, surfId, 0, 0
+      '#38b000', fairwayMat, surfId, 0, 0, true, 0, 1.0, showCollar ? 2.0 : 4.0
     );
 
     // 3. Championship Mowing Stripes clipped cleanly inside the organic fairway contour (using actual bounds)
@@ -7181,14 +7187,14 @@ export class TerrainGrid {
       const pts = this.generateEllipseMeterPoints(halfW, halfL, 128);
       this.fillSubLayerPolygon(
         ctx, pts, feat.centerX, feat.centerZ, feat.rotationRad, sX, sZ,
-        '#488a32', surfMat, surfId, 0, 0
+        '#488a32', surfMat, surfId, 0, 0, true, 0, 1.0, 4.0
       );
 
     } else if (feat.surfaceType === SurfaceType.FRINGE) {
       const pts = this.generateEllipseMeterPoints(halfW, halfL, 128);
       this.fillSubLayerPolygon(
         ctx, pts, feat.centerX, feat.centerZ, feat.rotationRad, sX, sZ,
-        '#35a043', surfMat, surfId, 0, 0
+        '#35a043', surfMat, surfId, 0, 0, true, 0, 1.0, 3.0
       );
 
     } else if (feat.surfaceType === SurfaceType.FAIRWAY) {
@@ -7202,17 +7208,17 @@ export class TerrainGrid {
         const fringeRingPts = this.computeUniformOffsetPolygon(baseFwPts, fringeWidth);
         this.fillSubLayerPolygon(
           ctx, firstCutRingPts, feat.centerX, feat.centerZ, feat.rotationRad, sX, sZ,
-          '#488a32', firstCutMat, firstCutId, 0, 0
+          '#488a32', firstCutMat, firstCutId, 0, 0, true, 0, 1.0, 4.5
         );
         this.fillSubLayerPolygon(
           ctx, fringeRingPts, feat.centerX, feat.centerZ, feat.rotationRad, sX, sZ,
-          '#35a043', fringeMat, fringeId, 0, 0
+          '#35a043', fringeMat, fringeId, 0, 0, true, 0, 1.0, 2.5
         );
       }
 
       this.fillSubLayerPolygon(
         ctx, baseFwPts, feat.centerX, feat.centerZ, feat.rotationRad, sX, sZ,
-        '#38b000', surfMat, surfId, 0, 0
+        '#38b000', surfMat, surfId, 0, 0, true, 0, 1.0, showCollar ? 2.0 : 4.0
       );
 
       const stripeW = surfMat.mowingStripeWidth ?? 4.6;
@@ -7458,7 +7464,7 @@ export class TerrainGrid {
                 const rMeters = Math.hypot(lx, lz);
                 const rSand = baseRad * 0.78;
                 const rBlend = rSand + lipWidth + 1.40;
-                if (rMeters >= Math.max(0, rSand * 0.56 - 1.2) && rMeters <= rBlend + 1.5) {
+                if (rMeters >= Math.max(0, rSand * 0.40 - 1.5) && rMeters <= rBlend + 2.0) {
                   isSub = true;
                   break;
                 }
