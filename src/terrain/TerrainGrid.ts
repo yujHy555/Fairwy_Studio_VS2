@@ -542,43 +542,14 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               return s * sqrt(d);
             }
 
-            // Next-Gen GPU-Optimized Dual-Scale Rotated Anti-Tiling Sampler (only 2 texture taps = 60+ FPS, zero repeating grid seams!)
+            // Next-Gen GPU-Optimized Dual-Scale Rotated Anti-Tiling Sampler (2 taps, ultra-lean for fast D3D11 compile & 60+ FPS!)
             vec3 sampleSeamlessTurf(sampler2D samp, vec2 uv) {
               vec3 nearCol = texture2D(samp, uv).rgb;
-              // 37-degree rotated, 0.43x macro-scale secondary octave completely breaks up repeating photo tile borders
               vec2 rotUv = vec2(uv.x * 0.7986 - uv.y * 0.6018, uv.x * 0.6018 + uv.y * 0.7986) * 0.43 + vec2(0.37, 0.71);
               vec3 macroCol = texture2D(samp, rotUv).rgb;
-              // Smooth low-frequency procedural organic blend mask (zero extra texture fetch!)
-              float n1 = sin(uv.x * 1.31 + sin(uv.y * 0.97)) * 0.5 + 0.5;
-              float n2 = cos(uv.y * 1.17 - cos(uv.x * 0.83)) * 0.5 + 0.5;
-              float blendW = smoothstep(0.18, 0.82, n1 * 0.55 + n2 * 0.45) * 0.48 + 0.16;
-              // Subtle organic macro turf variation (eliminates flat plastic look from mid/far distance)
-              float macroVar = 0.955 + 0.09 * (sin(uv.x * 0.37 + uv.y * 0.29) * 0.5 + 0.5);
+              float blendW = 0.28 + 0.24 * (sin(uv.x * 1.15) * cos(uv.y * 1.05));
+              float macroVar = 0.96 + 0.08 * (sin(uv.x * 0.37 + uv.y * 0.29) * 0.5 + 0.5);
               return mix(nearCol, macroCol, blendW) * macroVar;
-            }
-
-            // Anti-tiled 2-tap scalar roughness sampler (completely eliminates rectangular roughness tile planes on rotated Tee Boxes!)
-            float sampleSeamlessScalar(sampler2D samp, vec2 uv) {
-              float nearR = texture2D(samp, uv).r;
-              vec2 rotUv = vec2(uv.x * 0.7986 - uv.y * 0.6018, uv.x * 0.6018 + uv.y * 0.7986) * 0.43 + vec2(0.37, 0.71);
-              float macroR = texture2D(samp, rotUv).r;
-              float n1 = sin(uv.x * 1.31 + sin(uv.y * 0.97)) * 0.5 + 0.5;
-              float n2 = cos(uv.y * 1.17 - cos(uv.x * 0.83)) * 0.5 + 0.5;
-              float blendW = smoothstep(0.18, 0.82, n1 * 0.55 + n2 * 0.45) * 0.50 + 0.20;
-              return mix(nearR, macroR, blendW);
-            }
-
-            // Anti-tiled 2-tap tangent normal sampler (eliminates rotated normal-map square planes even on untextured flat Tee Box decks!)
-            vec3 sampleSeamlessNormal(sampler2D samp, vec2 uv) {
-              vec3 nA = texture2D(samp, uv).xyz * 2.0 - 1.0;
-              vec2 rotUv = vec2(uv.x * 0.7986 - uv.y * 0.6018, uv.x * 0.6018 + uv.y * 0.7986) * 0.43 + vec2(0.37, 0.71);
-              vec3 nB = texture2D(samp, rotUv).xyz * 2.0 - 1.0;
-              // Un-rotate nB.xy back into base tangent frame so lighting direction stays physically consistent
-              vec2 nBxy = vec2(nB.x * 0.7986 + nB.y * 0.6018, -nB.x * 0.6018 + nB.y * 0.7986);
-              float p1 = sin(uv.x * 1.31 + sin(uv.y * 0.97)) * 0.5 + 0.5;
-              float p2 = cos(uv.y * 1.17 - cos(uv.x * 0.83)) * 0.5 + 0.5;
-              float blendW = smoothstep(0.18, 0.82, p1 * 0.55 + p2 * 0.45) * 0.50 + 0.20;
-              return normalize(vec3(mix(nA.xy, nBxy, blendW), max(0.55, mix(nA.z, nB.z, blendW))));
             }
 
             // Fetches per-layer GPU transforms & properties cleanly for any independent sub-material ID (0..255)
@@ -616,36 +587,36 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
               if (kind > 3.5) {
                 texCol = sampleSeamlessTurf(featColorSampler, layerUv);
-                normRaw = sampleSeamlessNormal(featNormalSampler, layerUv);
-                roughRaw = sampleSeamlessScalar(featRoughSampler, layerUv);
+                normRaw = texture2D(featNormalSampler, layerUv).xyz * 2.0 - 1.0;
+                roughRaw = texture2D(featRoughSampler, layerUv).r;
               } else if (kind > 2.5) {
                 texCol = texture2D(waterBedColorSampler, layerUv).rgb;
                 #if defined(BUMP)
-                  normRaw = sampleSeamlessNormal(bumpSampler, layerUv);
+                  normRaw = texture2D(bumpSampler, layerUv).xyz * 2.0 - 1.0;
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
-                roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
+                roughRaw = texture2D(groundRoughSampler, layerUv).r;
               } else if (kind > 1.5) {
                 texCol = sampleSeamlessTurf(sandColorSampler, layerUv);
-                normRaw = sampleSeamlessNormal(featNormalSampler, layerUv);
-                roughRaw = sampleSeamlessScalar(featRoughSampler, layerUv);
+                normRaw = texture2D(featNormalSampler, layerUv).xyz * 2.0 - 1.0;
+                roughRaw = texture2D(featRoughSampler, layerUv).r;
               } else if (kind > 0.5) {
                 texCol = sampleSeamlessTurf(groundColorSampler, layerUv);
                 #if defined(BUMP)
-                  normRaw = sampleSeamlessNormal(bumpSampler, layerUv);
+                  normRaw = texture2D(bumpSampler, layerUv).xyz * 2.0 - 1.0;
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
-                roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
+                roughRaw = texture2D(groundRoughSampler, layerUv).r;
               } else {
                 texCol = sampleSeamlessTurf(featColorSampler, layerUv);
                 #if defined(BUMP)
-                  normRaw = sampleSeamlessNormal(bumpSampler, layerUv);
+                  normRaw = texture2D(bumpSampler, layerUv).xyz * 2.0 - 1.0;
                 #else
                   normRaw = vec3(0.0, 0.0, 1.0);
                 #endif
-                roughRaw = sampleSeamlessScalar(groundRoughSampler, layerUv);
+                roughRaw = texture2D(groundRoughSampler, layerUv).r;
               }
 
               outColor = texCol;
@@ -655,7 +626,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
               outNormal = normLvl > 0.001
                 ? normalize(terrainTBN * normalize(vec3(normRaw.xy * normLvl, max(0.55, normRaw.z))))
                 : geomN;
-              float smoothRough = outColorMix < 0.01 ? 1.0 : mix(0.84, roughRaw, 0.18);
+              float smoothRough = outColorMix < 0.01 ? 1.0 : mix(0.88, roughRaw, 0.12);
               outRough = lpMat.y < -0.05 ? 0.14 : clamp(smoothRough * lpMat.y, 0.04, 1.0);
               outMetallic = clamp(lpExtra.x, 0.0, 1.0);
               outBaseColor = lpExtra.yzw;
@@ -1252,9 +1223,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             );
 
             if (tSurfLid > 0.5 && tTotalWeight > 0.001) {
-              vec2 teeRotUv = vec2(tLocalX / max(1.0, uTeeMeta.y) + 0.371, tLocalZ / max(1.0, uTeeMeta.z) + 0.619);
               vec3 tSurfTex; float tSurfMix; vec3 tSurfNorm; float tSR; float tSM; vec3 tSurfBase;
-              evalSingleLayer(tSurfLid, teeRotUv, terrainTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
+              evalSingleLayer(tSurfLid, vRawTerrainUV, terrainTBN, geomN, slopeSafe, tSurfTex, tSurfMix, tSurfNorm, tSR, tSM, tSurfBase);
               vec3 tSurfCol = mix(tSurfBase, tSurfTex, tSurfMix);
 
               if (tStripeParams.x > 0.5 && tStripeParams.y > 0.05 && tStripeParams.z > 0.001) {
@@ -1272,7 +1242,7 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
 
               if (tShowCollar > 0.5 && tFringeLid > 0.5) {
                 vec3 tFrTex; float tFrMix; vec3 tFrNorm; float tFR; float tFM; vec3 tFrBase;
-                evalSingleLayer(tFringeLid, teeRotUv, terrainTBN, geomN, slopeSafe, tFrTex, tFrMix, tFrNorm, tFR, tFM, tFrBase);
+                evalSingleLayer(tFringeLid, vRawTerrainUV, terrainTBN, geomN, slopeSafe, tFrTex, tFrMix, tFrNorm, tFR, tFM, tFrBase);
                 vec3 tFringeCol = mix(tFrBase, tFrTex, tFrMix);
                 #if defined(VERTEXCOLOR) || defined(VERTEXALPHA)
                   tFringeCol *= vColor.rgb;
@@ -1619,12 +1589,11 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
-              vec2 spTeeRotUv = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.371, spTLocalZ / max(1.0, uTeeMeta.z) + 0.619);
               float tSR; float tSM;
-              evalSingleLayer(spTSurfLid, spTeeRotUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
+              evalSingleLayer(spTSurfLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
               if (spTShowCollar > 0.5 && spTFringeLid > 0.5) {
                 float tFR; float tFM;
-                evalSingleLayer(spTFringeLid, spTeeRotUv, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tFR, tFM, unusedBase);
+                evalSingleLayer(spTFringeLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tFR, tFM, unusedBase);
                 float teeCompR = mix(tFR, tSR, spTWeight);
                 float teeCompM = mix(tFM, tSM, spTWeight);
                 hostRough = mix(hostRough, teeCompR, spTTotalW);
@@ -1814,9 +1783,8 @@ class BunkerGrassExclusionPlugin extends MaterialPluginBase {
             );
 
             if (spTSurfLid > 0.5 && spTTotalW > 0.001) {
-              vec2 spTeeRotUv2 = vec2(spTLocalX / max(1.0, uTeeMeta.y) + 0.371, spTLocalZ / max(1.0, uTeeMeta.z) + 0.619);
               float tSR; float tSM;
-              evalSingleLayer(spTSurfLid, spTeeRotUv2, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
+              evalSingleLayer(spTSurfLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tSR, tSM, unusedBase);
               if (spTShowCollar > 0.5 && spTFringeLid > 0.5) {
                 float tFR; float tFM;
                 evalSingleLayer(spTFringeLid, vRawTerrainUV, mat3(1.0), vec3(0.0, 1.0, 0.0), 1.0, unusedC, unusedM, unusedN, tFR, tFM, unusedBase);
