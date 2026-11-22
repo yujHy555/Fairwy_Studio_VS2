@@ -4995,8 +4995,8 @@ class FairwayStudioApp {
       this.aerialRadarCamera.mode = Camera.ORTHOGRAPHIC_CAMERA;
       this.aerialRadarCamera.minZ = 10;
       this.aerialRadarCamera.maxZ = 2500;
-      // Exclude Green Grid & Green Dots layer (0x20000000) from Radar camera for cleaner view & higher FPS
-      this.aerialRadarCamera.layerMask = 0x1fffffff;
+      // Exclude Green Grid & Green Dots layer (0x02000000) from Radar camera while keeping default camera (0x0FFFFFFF) visible
+      this.aerialRadarCamera.layerMask = 0x0dffffff;
     }
 
     const cam = this.aerialRadarCamera;

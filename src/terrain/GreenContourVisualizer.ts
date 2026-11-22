@@ -27,7 +27,7 @@ interface SlopeComet {
   tailMesh: Mesh | InstancedMesh;
 }
 
-const GREEN_OVERLAY_LAYER_MASK = 0x20000000; // Main camera renders (0xFFFFFFFF); Radar camera (0x1FFFFFFF) skips!
+const GREEN_OVERLAY_LAYER_MASK = 0x02000000; // Inside default Camera layerMask (0x0FFFFFFF); Radar camera (0x0DFFFFFF) skips!
 
 export class GreenContourVisualizer {
   private scene: Scene;
