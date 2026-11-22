@@ -105,7 +105,6 @@ export class CourseGuideModal {
             <div class="cg-detail-nav">
               <button id="btn-cg-prev-hole" class="cg-arrow-btn" title="Previous Hole [←]">◀ Prev</button>
               <button id="btn-cg-next-hole" class="cg-arrow-btn" title="Next Hole [→]">Next ▶</button>
-              <button id="btn-cg-load-hole-3d" class="cg-load3d-btn" title="Apply this Kyalami hole graphic &amp; specs to active 3D hole">🏌️ Load Hole in 3D</button>
             </div>
           </div>
 

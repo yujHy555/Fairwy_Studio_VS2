@@ -15,6 +15,7 @@ export interface OverheadLayoutData {
   terrainLength: number;
   strokes: number;
   satelliteImageUrl?: string;
+  isBallMoving?: boolean;
 }
 
 export class OverheadHoleLayout {
@@ -26,7 +27,7 @@ export class OverheadHoleLayout {
   private liveAerialActive: boolean = false;
   private animFrameId: number | null = null;
   private pulsePhase: number = 0;
-  private viewMode: 'graphic' | 'radar' = 'graphic';
+  private viewMode: 'graphic' | 'radar' = 'radar';
   private showDistanceGraphic: boolean = false;
   private modeControlsBound: boolean = false;
   private onOpenCourseGuide?: () => void;
@@ -42,9 +43,7 @@ export class OverheadHoleLayout {
 
   public isRadarVisible(): boolean {
     if (this.isMinimized || !this.lastData) return false;
-    const hasGraphic = Boolean(this.lastData.hole.overheadImageUrl);
-    const effectiveMode: 'graphic' | 'radar' = hasGraphic ? this.viewMode : 'radar';
-    return effectiveMode === 'radar';
+    return true;
   }
 
   public setLiveAerialActive(active: boolean) {
@@ -134,52 +133,10 @@ export class OverheadHoleLayout {
     });
   }
 
-  private syncOverheadViewUI(hole: GolfHole) {
+  private syncOverheadViewUI(_hole: GolfHole) {
     this.ensureModeControlsBound();
-
-    const hasGraphic = Boolean(hole.overheadImageUrl);
-    const hasDist = Boolean(hole.distanceGuideImageUrl);
-    const effectiveMode: 'graphic' | 'radar' = hasGraphic ? this.viewMode : 'radar';
-
-    const graphicWrap = document.getElementById('overhead-graphic-wrap') as HTMLElement | null;
-    const imgEl = document.getElementById('overhead-hole-img') as HTMLImageElement | null;
     const radarCanvas = document.getElementById('overhead-hole-canvas') as HTMLCanvasElement | null;
-    const btnGraphic = document.getElementById('btn-overhead-mode-graphic') as HTMLButtonElement | null;
-    const btnRadar = document.getElementById('btn-overhead-mode-radar') as HTMLButtonElement | null;
-    const btnDist = document.getElementById('btn-overhead-dist-toggle') as HTMLButtonElement | null;
-
-    if (btnGraphic) {
-      btnGraphic.disabled = !hasGraphic;
-      btnGraphic.style.display = hasGraphic ? 'inline-flex' : 'none';
-      btnGraphic.classList.toggle('active', effectiveMode === 'graphic');
-    }
-    if (btnRadar) {
-      btnRadar.classList.toggle('active', effectiveMode === 'radar');
-    }
-    if (btnDist) {
-      btnDist.disabled = !hasGraphic;
-      btnDist.style.display = hasGraphic && effectiveMode === 'graphic' ? 'inline-flex' : 'none';
-      btnDist.classList.toggle('active', this.showDistanceGraphic);
-    }
-
-    if (effectiveMode === 'graphic' && hasGraphic && graphicWrap && imgEl) {
-      // Keep the clean hole graphic visible underneath and render live distances + ball beacon as a crisp HUD overlay
-      const targetSrc = hole.overheadImageUrl || '';
-      if (targetSrc && imgEl.getAttribute('src') !== targetSrc) {
-        imgEl.src = targetSrc;
-      }
-      if (this.lastRulerHoleNum !== hole.number) {
-        this.lastRulerHoleNum = hole.number;
-        this.clearGraphicRuler();
-      }
-      this.ensureGraphicRulerBound();
-      graphicWrap.style.display = 'flex';
-      if (radarCanvas) radarCanvas.style.display = 'none';
-      this.redrawGraphicRuler();
-    } else {
-      if (graphicWrap) graphicWrap.style.display = 'none';
-      if (radarCanvas) radarCanvas.style.display = 'block';
-    }
+    if (radarCanvas) radarCanvas.style.display = 'block';
   }
 
   private ensureGraphicRulerBound() {
@@ -909,57 +866,59 @@ export class OverheadHoleLayout {
     ctx.fillText('TEE', teePt.x, teePt.y + 6);
     ctx.restore();
 
-    // 5. Dynamic Aim Line & Target Carry Zone
+    // 5. Dynamic Aim Line & Target Carry Zone (hidden while ball is in flight/rolling, restored cleanly at rest)
     const ballPt = this.worldToCanvas(data.ballPos.x, data.ballPos.z);
-    const radAim = (data.aimAzimuthDeg * Math.PI) / 180;
-    const carryM = data.club.typicalCarryMeters;
-    const targetWx = data.ballPos.x + Math.sin(radAim) * carryM;
-    const targetWz = data.ballPos.z + Math.cos(radAim) * carryM;
-    const targetPt = this.worldToCanvas(targetWx, targetWz);
+    if (!data.isBallMoving) {
+      const radAim = (data.aimAzimuthDeg * Math.PI) / 180;
+      const carryM = data.club.typicalCarryMeters;
+      const targetWx = data.ballPos.x + Math.sin(radAim) * carryM;
+      const targetWz = data.ballPos.z + Math.cos(radAim) * carryM;
+      const targetPt = this.worldToCanvas(targetWx, targetWz);
 
-    // Neon laser dashed aim trajectory
-    ctx.save();
-    ctx.strokeStyle = '#00f0ff';
-    ctx.lineWidth = 1.8;
-    ctx.setLineDash([5, 4]);
-    ctx.shadowColor = '#00f0ff';
-    ctx.shadowBlur = 6;
-    ctx.beginPath();
-    ctx.moveTo(ballPt.x, ballPt.y);
-    ctx.lineTo(targetPt.x, targetPt.y);
-    ctx.stroke();
-    ctx.restore();
+      // Neon laser dashed aim trajectory
+      ctx.save();
+      ctx.strokeStyle = '#00f0ff';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 4]);
+      ctx.shadowColor = '#00f0ff';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(ballPt.x, ballPt.y);
+      ctx.lineTo(targetPt.x, targetPt.y);
+      ctx.stroke();
+      ctx.restore();
 
-    // Target Landing Marker (Crosshair circle)
-    ctx.save();
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(targetPt.x, targetPt.y, 8, 0, Math.PI * 2);
-    ctx.stroke();
+      // Target Landing Marker (Crosshair circle)
+      ctx.save();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(targetPt.x, targetPt.y, 8, 0, Math.PI * 2);
+      ctx.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(targetPt.x - 11, targetPt.y);
-    ctx.lineTo(targetPt.x + 11, targetPt.y);
-    ctx.moveTo(targetPt.x, targetPt.y - 11);
-    ctx.lineTo(targetPt.x, targetPt.y + 11);
-    ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(targetPt.x - 11, targetPt.y);
+      ctx.lineTo(targetPt.x + 11, targetPt.y);
+      ctx.moveTo(targetPt.x, targetPt.y - 11);
+      ctx.lineTo(targetPt.x, targetPt.y + 11);
+      ctx.stroke();
 
-    // Carry distance label badge
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(targetPt.x + 12, targetPt.y - 7, 56, 14, 3);
-    ctx.fill();
-    ctx.stroke();
+      // Carry distance label badge
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(targetPt.x + 12, targetPt.y - 7, 56, 14, 3);
+      ctx.fill();
+      ctx.stroke();
 
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = '700 8px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`${Math.round(carryM)}m Carry`, targetPt.x + 15, targetPt.y);
-    ctx.restore();
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '700 8px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`${Math.round(carryM)}m Carry`, targetPt.x + 15, targetPt.y);
+      ctx.restore();
+    }
 
     // 6. Pin / Cup & Flag Marker
     ctx.save();

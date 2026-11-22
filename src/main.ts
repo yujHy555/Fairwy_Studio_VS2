@@ -2427,7 +2427,8 @@ class FairwayStudioApp {
       terrainWidth: this.terrain.width,
       terrainLength: this.terrain.length,
       strokes: this.courseManager.currentStrokes,
-      satelliteImageUrl: this.terrain.satellitePreviewDataUrl || undefined
+      satelliteImageUrl: this.terrain.satellitePreviewDataUrl || undefined,
+      isBallMoving: this.ball.state === BallState.IN_FLIGHT || this.ball.state === BallState.ROLLING
     });
 
     const hole = this.courseManager.currentHole;
@@ -4823,7 +4824,8 @@ class FairwayStudioApp {
         terrainWidth: this.terrain.width,
         terrainLength: this.terrain.length,
         strokes: this.courseManager.currentStrokes,
-        satelliteImageUrl: this.terrain.satellitePreviewDataUrl || undefined
+        satelliteImageUrl: this.terrain.satellitePreviewDataUrl || undefined,
+        isBallMoving: true
       });
     }
 
@@ -5854,7 +5856,7 @@ class FairwayStudioApp {
     }
 
     this.ui.updateHolesList(this.courseManager.courseData.holes, this.courseManager.currentHoleIndex);
-    this.ui.overheadLayout?.setViewMode('graphic');
+    this.ui.overheadLayout?.setViewMode('radar');
     this.updateHUDDisplay();
     this.updateDevStats();
     this.ui.showToast(

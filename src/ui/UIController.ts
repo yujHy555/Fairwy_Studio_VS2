@@ -742,18 +742,8 @@ export class UIController {
           </div>
 
           <div class="overhead-body" id="overhead-body">
-            <div class="overhead-view-pills">
-              <button id="btn-overhead-mode-graphic" class="btn-overhead-pill active" title="Course Overhead Graphic">Graphic</button>
-              <button id="btn-overhead-mode-radar" class="btn-overhead-pill" title="Live 3D Overhead Radar">3D Radar</button>
-              <button id="btn-overhead-dist-toggle" class="btn-overhead-pill" title="Toggle Distance Guide Image">Dist</button>
-            </div>
-
-            <!-- Dynamic Overhead 2D Canvas or Official Course Hole Graphic -->
+            <!-- Live 3D Overhead Radar View -->
             <div class="overhead-canvas-container">
-              <div id="overhead-graphic-wrap" class="overhead-graphic-wrap" style="display: none;">
-                <img id="overhead-hole-img" class="overhead-hole-img" alt="Hole Overhead Graphic" />
-                <canvas id="overhead-ruler-canvas" class="overhead-ruler-canvas" title="Click to aim shot • Drag to measure distance • Double-click to clear"></canvas>
-              </div>
               <canvas id="overhead-hole-canvas" width="536" height="620"></canvas>
             </div>
 
