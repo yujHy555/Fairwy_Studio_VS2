@@ -2011,18 +2011,28 @@ export class UIController {
   public updateHolesList(holes: GolfHole[], activeIndex: number) {
     const container = document.getElementById('hole-tabs');
     if (container) {
-      container.innerHTML = holes.map((h, i) => `
-        <button class="hole-tab-btn ${i === activeIndex ? 'active' : ''}" data-hole-idx="${i}">
-          ${h.isDemo ? 'Demo Hole' : `Hole ${h.number}`} (Par ${h.par})
-        </button>
-      `).join('');
+      const visibleHoles = holes
+        .map((h, i) => ({ h, i }))
+        .filter(({ h }) => !h.isDemo);
 
-      container.querySelectorAll('.hole-tab-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const idx = parseInt(btn.getAttribute('data-hole-idx') || '0', 10);
-          this.callbacks.onHoleSelect(idx);
+      if (visibleHoles.length === 0) {
+        container.innerHTML = '';
+        container.style.display = 'none';
+      } else {
+        container.style.display = '';
+        container.innerHTML = visibleHoles.map(({ h, i }) => `
+          <button class="hole-tab-btn ${i === activeIndex ? 'active' : ''}" data-hole-idx="${i}">
+            Hole ${h.number} (Par ${h.par})
+          </button>
+        `).join('');
+
+        container.querySelectorAll('.hole-tab-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const idx = parseInt(btn.getAttribute('data-hole-idx') || '0', 10);
+            this.callbacks.onHoleSelect(idx);
+          });
         });
-      });
+      }
     }
 
     const activeHole = holes[activeIndex] || holes[0];
