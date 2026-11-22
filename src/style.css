@@ -5439,11 +5439,14 @@ body.in-designer-mode .designer-geo-stats {
 
 /* ==========================================================================
    Adaptive Responsive Layout for 1920x1080 & DPI-Scaled Laptop Screens
-   (Leaves wide / ultrawide >1920px monitors completely unchanged!)
+   - Keeps the entire Shot Mechanic (Shaper + Club Selector + Swing Bar + Club Card)
+     100% identical with zero overlap at every resolution!
+   - Compacts top-left Hole Descriptor & perimeter panels to maximize 3D course view.
+   - Leaves wide / ultrawide >1920px monitors completely unchanged!
    ========================================================================== */
 @media (max-width: 1920px), (max-height: 1080px) {
   .top-header {
-    height: 46px;
+    height: 44px;
     padding: 0 12px;
     gap: 6px;
   }
@@ -5454,193 +5457,177 @@ body.in-designer-mode .designer-geo-stats {
     font-size: 11px;
   }
 
-  .hud-hole-info {
-    top: 56px;
+  /* Compact Top-Left Hole Descriptor to open up the main course view */
+  .hud-top-card {
+    top: 14px;
     left: 14px;
-    min-width: 240px;
-    max-width: 290px;
-    padding: 10px 14px;
+    padding: 9px 13px;
+    gap: 4px;
+    border-radius: 10px;
+    max-width: 245px;
   }
 
+  .hud-top-card .hole-meta {
+    gap: 6px;
+  }
+
+  .hud-top-card .hole-meta h2 {
+    font-size: 14px;
+  }
+
+  .hud-top-card .par-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+  }
+
+  .hud-top-card .stroke-tag {
+    font-size: 11px;
+  }
+
+  .hud-top-card .dist-num {
+    font-size: 26px;
+  }
+
+  .hud-top-card .dist-num .unit {
+    font-size: 13px;
+  }
+
+  .hud-top-card .dist-yards {
+    font-size: 11px;
+  }
+
+  .hud-top-card .lie-status {
+    font-size: 11px;
+  }
+
+  .hud-top-card .shot-tracker-badge {
+    margin-top: 3px;
+    padding: 4px 9px;
+  }
+
+  .hud-top-card .shot-tracker-total {
+    font-size: 14px;
+  }
+
+  .hud-top-card .shot-tracker-sub {
+    font-size: 10px;
+  }
+
+  /* Sleek scaled Top-Right Music + Wind widgets */
   .hud-top-right-widgets {
-    top: 54px;
+    top: 14px;
     right: 14px;
-    gap: 8px;
+    gap: 10px;
+    transform: scale(0.84);
+    transform-origin: top right;
   }
 
-  .hud-music-player {
-    width: 196px;
-    padding: 6px 9px;
-  }
-
-  .hud-wind-gauge {
-    min-width: 96px;
-    padding: 6px 10px;
-  }
-
+  /* Sleek Overhead Radar Panel positioned cleanly below scaled top-right widgets */
   .hud-overhead-layout-panel {
-    top: 152px;
+    top: 122px;
     right: 14px;
-    width: clamp(230px, 16.5vw, 310px);
-    max-width: clamp(230px, 16.5vw, 310px);
-    max-height: calc(100vh - 166px);
+    width: clamp(210px, 14vw, 240px);
+    max-width: clamp(210px, 14vw, 240px);
+    max-height: calc(100vh - 138px);
   }
 
   .hud-overhead-layout-panel .overhead-body {
-    max-height: calc(100vh - 208px);
+    max-height: calc(100vh - 178px);
     display: flex;
     flex-direction: column;
   }
 
   .hud-overhead-layout-panel .overhead-canvas-container {
     flex: 1 1 auto;
-    min-height: 220px;
-    max-height: calc(100vh - 268px);
+    min-height: 200px;
+    max-height: calc(100vh - 238px);
   }
 
   .hud-overhead-layout-panel #overhead-hole-canvas {
     width: 100% !important;
     height: 100% !important;
-    max-height: calc(100vh - 268px);
+    max-height: calc(100vh - 238px);
   }
 
+  /* Compact Bottom-Left HUD Stack (Dev Controls, FPS, Gamepad) */
   .bottom-left-hud-stack {
-    left: 14px;
-    bottom: 14px;
-    gap: 7px;
-    width: clamp(210px, 14.5vw, 250px);
-  }
-
-  .perf-fps-hud,
-  .play-dev-controls,
-  .gamepad-hud-panel {
-    padding: 8px 10px;
-  }
-
-  .perf-fps-num {
-    font-size: 20px;
-  }
-
-  .hud-club-selector {
-    bottom: 122px;
-    padding: 5px 12px;
-    gap: 10px;
-  }
-
-  .hud-swing-panel {
-    bottom: 14px;
-    padding: 8px 14px;
-    min-width: 320px;
-  }
-
-  .club-card-container {
-    width: 142px;
-    height: 80px;
-    bottom: 14px;
-    left: calc(50% + 196px);
-  }
-
-  .club-card-img {
-    width: 142px;
-    height: 80px;
+    left: 12px;
+    bottom: 12px;
+    transform: scale(0.84);
+    transform-origin: bottom left;
   }
 
   #developer-zone-panel {
-    top: 56px;
+    top: 54px;
     right: 12px;
-    width: clamp(280px, 18vw, 326px);
-    max-height: calc(100vh - 68px);
+    width: clamp(275px, 17vw, 316px);
+    max-height: calc(100vh - 66px);
   }
 }
 
 /* Compact 1080p Laptops with 125% / 150% Windows Display Scaling (1536x864 .. 1280x720 CSS viewport) */
-@media (max-width: 1580px), (max-height: 880px) {
+@media (max-width: 1580px), (max-height: 860px) {
   .top-header {
-    height: 42px;
+    height: 40px;
     padding: 0 8px;
   }
 
-  .hud-hole-info {
-    top: 50px;
+  .hud-top-card {
+    top: 10px;
     left: 10px;
-    min-width: 210px;
-    max-width: 248px;
-    padding: 8px 11px;
+    padding: 7px 10px;
+    gap: 3px;
+    max-width: 215px;
+  }
+
+  .hud-top-card .hole-meta h2 {
+    font-size: 13px;
+  }
+
+  .hud-top-card .dist-num {
+    font-size: 22px;
   }
 
   .hud-top-right-widgets {
-    top: 48px;
+    top: 10px;
     right: 10px;
-    gap: 6px;
+    transform: scale(0.76);
     transform-origin: top right;
   }
 
-  .hud-music-player {
-    width: 174px;
-    padding: 5px 8px;
-  }
-
-  .hud-wind-gauge {
-    min-width: 84px;
-    padding: 5px 8px;
-  }
-
   .hud-overhead-layout-panel {
-    top: 138px;
+    top: 108px;
     right: 10px;
-    width: clamp(205px, 17vw, 256px);
-    max-width: clamp(205px, 17vw, 256px);
-    max-height: calc(100vh - 150px);
+    width: clamp(190px, 15vw, 220px);
+    max-width: clamp(190px, 15vw, 220px);
+    max-height: calc(100vh - 120px);
   }
 
   .hud-overhead-layout-panel .overhead-canvas-container {
-    min-height: 170px;
-    max-height: calc(100vh - 246px);
+    min-height: 160px;
+    max-height: calc(100vh - 216px);
   }
 
   .hud-overhead-layout-panel #overhead-hole-canvas {
-    max-height: calc(100vh - 246px);
+    max-height: calc(100vh - 216px);
   }
 
   .bottom-left-hud-stack {
     left: 10px;
     bottom: 10px;
-    width: clamp(192px, 15vw, 224px);
-    gap: 5px;
+    transform: scale(0.76);
+    transform-origin: bottom left;
   }
 
   .perf-tips-container {
     display: none;
   }
 
-  .hud-club-selector {
-    bottom: 108px;
-    padding: 4px 10px;
-  }
-
-  .hud-swing-panel {
-    bottom: 10px;
-    padding: 7px 12px;
-    min-width: 290px;
-  }
-
-  .club-card-container {
-    width: 120px;
-    height: 68px;
-    bottom: 10px;
-    left: calc(50% + 174px);
-  }
-
-  .club-card-img {
-    width: 120px;
-    height: 68px;
-  }
-
   #developer-zone-panel {
-    top: 50px;
+    top: 48px;
     right: 10px;
-    width: clamp(260px, 20vw, 300px);
-    max-height: calc(100vh - 60px);
+    width: clamp(255px, 19vw, 290px);
+    max-height: calc(100vh - 58px);
   }
 }
 
