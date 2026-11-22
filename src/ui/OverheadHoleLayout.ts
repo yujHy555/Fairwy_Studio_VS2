@@ -70,6 +70,9 @@ export class OverheadHoleLayout {
     this.render();
   }
 
+  private cachedAerialRect: DOMRect | null = null;
+  private cachedAerialRectTime = 0;
+
   public getAerialCameraFrame(): {
     canvasRect: DOMRect;
     centerX: number;
@@ -80,7 +83,12 @@ export class OverheadHoleLayout {
     halfZ: number;
   } | null {
     if (!this.canvas || !this.lastData || !this.isRadarVisible()) return null;
-    const rect = this.canvas.getBoundingClientRect();
+    const now = performance.now();
+    if (!this.cachedAerialRect || now - this.cachedAerialRectTime > 350) {
+      this.cachedAerialRect = this.canvas.getBoundingClientRect();
+      this.cachedAerialRectTime = now;
+    }
+    const rect = this.cachedAerialRect;
     if (rect.width < 20 || rect.height < 20) return null;
     this.computeViewport();
     const center = this.canvasToWorld(this.canvasWidth * 0.5, this.canvasHeight * 0.5);

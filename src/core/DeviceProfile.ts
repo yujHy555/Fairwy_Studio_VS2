@@ -33,10 +33,33 @@ export function getDeviceProfile(): DeviceProfile {
   const cores = hasNavigator ? navigator.hardwareConcurrency || 8 : 8;
   const memGb = hasNavigator ? Number((navigator as any).deviceMemory || 8) : 8;
 
+  // Detect integrated / software laptop GPUs via WebGL renderer string so thin-and-light
+  // laptops don't get saddled with 1.5x HiDPI + 3x 2048px CSM shadow cascades.
+  let isIntegratedOrSoftwareGpu = false;
+  if (typeof document !== 'undefined') {
+    try {
+      const probe = document.createElement('canvas');
+      const gl = (probe.getContext('webgl2') || probe.getContext('webgl')) as WebGLRenderingContext | null;
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        const renderer = String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) || '').toLowerCase();
+        if (
+          /intel|uhd|iris|hd graphics|swiftshader|llvmpipe|mesa|microsoft basic|radeon\(tm\) graphics|vega\s*[0-9]|adreno|mali/.test(renderer) &&
+          !/rtx|gtx|radeon rx|radeon pro|arc a\d|quadro|firepro/.test(renderer)
+        ) {
+          isIntegratedOrSoftwareGpu = true;
+        }
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
+      }
+    } catch {
+      // Ignore probe errors
+    }
+  }
+
   let tier: DeviceTier = 'high';
   if (isMobile) {
     tier = 'mobile';
-  } else if (cores <= 4 || memGb <= 4) {
+  } else if (cores <= 4 || memGb <= 4 || isIntegratedOrSoftwareGpu) {
     tier = 'mid';
   }
 
@@ -56,12 +79,12 @@ export function getDeviceProfile(): DeviceProfile {
   } else if (tier === 'mid') {
     cachedProfile = {
       tier: 'mid',
-      maxDpr: 1.25,
-      antialias: true,
+      maxDpr: 1.0,
+      antialias: false,
       shadowMapSize: 1024,
-      shadowCascades: 3,
+      shadowCascades: 2,
       shadowFilterQuality: 'low',
-      maxAnisotropy: 8,
+      maxAnisotropy: 4,
       maxGlbTextureSize: 1024,
       maxSatelliteTextureSize: 2048,
       splatResolution: 1024
