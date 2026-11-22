@@ -5437,6 +5437,26 @@ body.in-designer-mode .designer-geo-stats {
   opacity: 0.65;
 }
 
+.outliner-hole-select {
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(15, 23, 42, 0.92);
+  color: #38bdf8;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  outline: none;
+  margin-right: 2px;
+}
+
+.outliner-hole-select:hover,
+.outliner-hole-select:focus {
+  border-color: #38bdf8;
+  background: rgba(14, 165, 233, 0.2);
+}
+
 /* ==========================================================================
    Adaptive Responsive Layout for 1920x1080 & DPI-Scaled Laptop Screens
    - Keeps the entire Shot Mechanic (Shaper + Club Selector + Swing Bar + Club Card)

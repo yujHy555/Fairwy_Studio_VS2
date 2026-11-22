@@ -898,15 +898,19 @@ export class OverheadHoleLayout {
     let tee = { x: data.hole.teePosition.x, z: data.hole.teePosition.z };
     let pin = { x: data.pinPos.x, z: data.pinPos.z };
 
-    // Dynamically recognize user-added Tee Box and Green features so Radar & aiming always stay 1:1 synced!
-    const teeFeat = data.features.find((f) => f.surfaceType === SurfaceType.TEE);
+    // Dynamically recognize user-added Tee Box and Green features for the active hole (1..18) so Radar & aiming stay 1:1 synced!
+    const teeFeat =
+      data.features.find((f) => f.surfaceType === SurfaceType.TEE && f.holeNumber === data.hole.number) ||
+      data.features.find((f) => f.surfaceType === SurfaceType.TEE);
     if (teeFeat && !data.hole.hasCustomTeePosition) {
       tee = { x: teeFeat.centerX, z: teeFeat.centerZ };
     }
-    const greenFeat = data.features.find((f) => f.surfaceType === SurfaceType.GREEN);
+    const greenFeat =
+      data.features.find((f) => f.surfaceType === SurfaceType.GREEN && f.holeNumber === data.hole.number) ||
+      data.features.find((f) => f.surfaceType === SurfaceType.GREEN);
     if (greenFeat) {
       const distPin = Math.hypot(greenFeat.centerX - pin.x, greenFeat.centerZ - pin.z);
-      if (distPin > Math.max(greenFeat.width, greenFeat.length) * 0.75 + 15) {
+      if (greenFeat.holeNumber === data.hole.number || distPin > Math.max(greenFeat.width, greenFeat.length) * 0.75 + 15) {
         pin = { x: greenFeat.centerX, z: greenFeat.centerZ };
       }
     }

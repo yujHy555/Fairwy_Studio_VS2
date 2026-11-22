@@ -569,15 +569,62 @@ export class CourseManager {
     }
   }
 
+  /**
+   * Assigns a stamped/traced feature to a specific course hole (1..18), auto-creating
+   * the hole entry if needed, and syncing that hole's Tee or Pin coordinates & heading.
+   */
+  public assignFeatureToHole(feat: {
+    centerX: number;
+    centerZ: number;
+    rotationRad: number;
+    surfaceType: SurfaceType;
+    holeNumber?: number;
+  }, holeNumber: number): GolfHole {
+    const num = Math.max(1, Math.min(18, Math.round(holeNumber)));
+    feat.holeNumber = num;
+
+    let hole = this.courseData.holes.find((h) => h.number === num);
+    if (!hole) {
+      const baseElev = this.terrain.getElevation(feat.centerX, feat.centerZ);
+      hole = {
+        number: num,
+        name: `Hole ${num}`,
+        par: 4,
+        teePosition: { x: feat.centerX, y: baseElev, z: feat.centerZ },
+        pinPosition: { x: feat.centerX, y: baseElev, z: Math.min(this.terrain.length - 10, feat.centerZ + 120) },
+        waypoints: [],
+        isDemo: false
+      };
+      this.courseData.holes.push(hole);
+      this.courseData.holes.sort((a, b) => a.number - b.number);
+      // Keep currentHoleIndex pointing to the active hole after sorting
+      const curNum = this.currentHole?.number ?? 1;
+      const newCurIdx = this.courseData.holes.findIndex((h) => h.number === curNum);
+      if (newCurIdx >= 0) this.courseData.currentHoleIndex = newCurIdx;
+    }
+
+    const elev = this.terrain.getElevation(feat.centerX, feat.centerZ);
+    if (feat.surfaceType === SurfaceType.TEE) {
+      hole.teePosition = { x: feat.centerX, y: elev, z: feat.centerZ };
+      hole.customTeeHeadingRad = -feat.rotationRad;
+      hole.hasCustomTeePosition = false;
+    } else if (feat.surfaceType === SurfaceType.GREEN) {
+      hole.pinPosition = { x: feat.centerX, y: elev, z: feat.centerZ };
+    }
+    return hole;
+  }
+
   public setupHoleVisuals(forceCreateMarkers: boolean = false) {
     const hole = this.currentHole;
 
     this.clearHoleMarkers();
 
-    // Auto-validate teePosition: ensure tee markers & ball are squarely on the elevated Championship Tee Box deck
-    const teeFeatures = this.terrain.stampedFeatures.filter(
+    // Auto-validate teePosition: strictly prefer Tee Box assigned to this hole (1..18), falling back to nearest unassigned
+    const allTeeFeatures = this.terrain.stampedFeatures.filter(
       f => f.surfaceType === SurfaceType.TEE || (f.surfaceType as any) === 'tee' || (f.surfaceType as any) === 'TEE'
     );
+    const holeTeeFeatures = allTeeFeatures.filter(f => f.holeNumber === hole.number);
+    const teeFeatures = holeTeeFeatures.length > 0 ? holeTeeFeatures : allTeeFeatures;
     if (teeFeatures.length > 0) {
       let bestTee = teeFeatures[0];
       let minDist = Infinity;
@@ -594,16 +641,19 @@ export class CourseManager {
       const halfL = bestTee.length * 0.45;
       const isInsideDeck = (dx <= halfW && dz <= halfL) && this.terrain.getSurfaceAt(hole.teePosition.x, hole.teePosition.z) === SurfaceType.TEE;
       
-      if (!isInsideDeck) {
+      if (!isInsideDeck || holeTeeFeatures.length > 0) {
         hole.teePosition.x = bestTee.centerX;
         hole.teePosition.z = bestTee.centerZ;
+        hole.customTeeHeadingRad = -bestTee.rotationRad;
       }
     }
 
-    // Auto-validate pinPosition: ensure pin, flag & cup are squarely on the Putting Green surface
-    const greenFeatures = this.terrain.stampedFeatures.filter(
+    // Auto-validate pinPosition: strictly prefer Putting Green assigned to this hole (1..18), falling back to nearest
+    const allGreenFeatures = this.terrain.stampedFeatures.filter(
       f => f.surfaceType === SurfaceType.GREEN || (f.surfaceType as any) === 'green' || (f.surfaceType as any) === 'GREEN'
     );
+    const holeGreenFeatures = allGreenFeatures.filter(f => f.holeNumber === hole.number);
+    const greenFeatures = holeGreenFeatures.length > 0 ? holeGreenFeatures : allGreenFeatures;
     if (greenFeatures.length > 0) {
       let bestGreen = greenFeatures[0];
       let minDist = Infinity;
@@ -620,7 +670,7 @@ export class CourseManager {
       const halfL = bestGreen.length * 0.45;
       const isInsideGreen = (dx <= halfW && dz <= halfL) && this.terrain.getSurfaceAt(hole.pinPosition.x, hole.pinPosition.z) === SurfaceType.GREEN;
 
-      if (!isInsideGreen) {
+      if (!isInsideGreen || holeGreenFeatures.length > 0) {
         hole.pinPosition.x = bestGreen.centerX;
         hole.pinPosition.z = bestGreen.centerZ;
       }
@@ -682,10 +732,12 @@ export class CourseManager {
     const hole = holeIndex !== undefined ? this.courseData.holes[holeIndex] : this.currentHole;
     if (!hole) return false;
 
-    const teeFeatures = this.terrain.stampedFeatures.filter(
+    const allTeeFeatures = this.terrain.stampedFeatures.filter(
       f => f.surfaceType === SurfaceType.TEE || (f.surfaceType as any) === 'tee' || (f.surfaceType as any) === 'TEE' || f.name?.toLowerCase().includes('tee')
     );
-    if (teeFeatures.length === 0) return false;
+    if (allTeeFeatures.length === 0) return false;
+    const holeTeeFeatures = allTeeFeatures.filter(f => f.holeNumber === hole.number);
+    const teeFeatures = holeTeeFeatures.length > 0 ? holeTeeFeatures : allTeeFeatures;
 
     let bestTee = teeFeatures[0];
     let minDist = Infinity;

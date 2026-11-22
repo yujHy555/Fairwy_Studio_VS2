@@ -36,6 +36,7 @@ export interface OutlinerItem {
   posZ: number;
   isVisible: boolean;
   featureIndex?: number;
+  holeNumber?: number;
   meshId?: string;
 }
 
@@ -168,6 +169,7 @@ export interface UIEventCallbacks {
   onTraceUndoPoint?: () => void;
   onRestartHole?: () => void;
   onMulligan?: () => void;
+  onOutlinerAssignHole?: (featureIndex: number, holeNumber: number) => void;
 }
 
 
@@ -5603,7 +5605,16 @@ export class UIController {
 
     const filtered = this.outlinerItems.filter((item) => {
       if (cat !== 'all' && item.category !== cat) return false;
-      if (q && !item.name.toLowerCase().includes(q) && !item.id.toLowerCase().includes(q)) return false;
+      if (q) {
+        const holeTag = item.holeNumber ? `h${item.holeNumber} hole ${item.holeNumber}` : '';
+        if (
+          !item.name.toLowerCase().includes(q) &&
+          !item.id.toLowerCase().includes(q) &&
+          !holeTag.includes(q)
+        ) {
+          return false;
+        }
+      }
       return true;
     });
 
@@ -5621,18 +5632,47 @@ export class UIController {
       const isSelected = isFeature ? this.selectedFeatureIdx === item.featureIndex : false;
       if (isSelected) row.classList.add('is-selected');
 
+      const assignedHole = Math.max(1, Math.min(18, item.holeNumber ?? 1));
+      let holeSelectHtml = '';
+      if (isFeature) {
+        let opts = '';
+        for (let h = 1; h <= 18; h++) {
+          opts += `<option value="${h}"${h === assignedHole ? ' selected' : ''}>H${h}</option>`;
+        }
+        holeSelectHtml = `<select class="outliner-hole-select" title="Assign feature to Hole 1-18" data-hole-select="1">${opts}</select>`;
+      }
+
+      const metaText = isFeature
+        ? `H${assignedHole} • X:${item.posX.toFixed(0)} Z:${item.posZ.toFixed(0)}`
+        : `X:${item.posX.toFixed(0)} Z:${item.posZ.toFixed(0)}`;
+
       row.innerHTML = `
         <span class="outliner-row-icon">${item.icon}</span>
         <div class="outliner-row-info">
           <span class="outliner-row-name" title="${item.name}">${item.name}</span>
-          <span class="outliner-row-meta">X:${item.posX.toFixed(0)} Z:${item.posZ.toFixed(0)}</span>
+          <span class="outliner-row-meta">${metaText}</span>
         </div>
         <div class="outliner-row-actions">
+          ${holeSelectHtml}
           <button class="outliner-btn-action ${item.isVisible ? '' : 'is-hidden-item'}" title="Toggle Visibility" data-action="vis">${item.isVisible ? '👁️' : '🕶️'}</button>
           <button class="outliner-btn-action" title="Frame Camera [F]" data-action="frame">🎯</button>
           <button class="outliner-btn-action is-delete" title="Delete Element" data-action="delete">🗑️</button>
         </div>
       `;
+
+      const holeSel = row.querySelector<HTMLSelectElement>('select[data-hole-select="1"]');
+      if (holeSel && isFeature) {
+        holeSel.addEventListener('pointerdown', (e) => e.stopPropagation());
+        holeSel.addEventListener('click', (e) => e.stopPropagation());
+        holeSel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          const nextHole = Number(holeSel.value);
+          if (Number.isFinite(nextHole) && nextHole >= 1 && nextHole <= 18) {
+            item.holeNumber = nextHole;
+            this.callbacks.onOutlinerAssignHole?.(item.featureIndex!, nextHole);
+          }
+        });
+      }
 
       row.addEventListener('click', (e) => {
         e.stopPropagation();

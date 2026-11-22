@@ -1957,6 +1957,7 @@ export interface StampedFeatureRecord {
   customTextureUrls?: FeatureTextureUrls;
   id?: string;
   name?: string;
+  holeNumber?: number; // Assigned course hole (1..18) for 18-hole ordering, Tee/Green routing & Next Hole flow
   centerX: number;
   centerZ: number;
   width: number;

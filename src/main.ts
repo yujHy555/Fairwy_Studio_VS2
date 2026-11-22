@@ -395,6 +395,9 @@ class FairwayStudioApp {
           const snap = this.captureHistorySnapshot(`Trace ${surfaceType}`);
           const newIdx = this.terrain.addTracedFeature(surfaceType, contour);
           const createdFeat = this.terrain.stampedFeatures[newIdx];
+          if (createdFeat && this.courseManager) {
+            createdFeat.holeNumber = this.courseManager.currentHole.number;
+          }
           if (surfaceType === SurfaceType.WATER) {
             this.courseManager.refreshWaterMeshes();
           } else if (surfaceType === SurfaceType.TEE && createdFeat) {
@@ -2002,6 +2005,30 @@ class FairwayStudioApp {
         this.ui.updateClubCard(this.activeClub.id, false);
         this.updateHUDDisplay();
         this.ui.showToast('🏌️ Mulligan! Re-hit your shot', 'success', 2200);
+      },
+      onOutlinerAssignHole: (featureIndex: number, holeNumber: number) => {
+        const feat = this.terrain.stampedFeatures[featureIndex];
+        if (!feat || !this.courseManager) return;
+        const assignedHole = this.courseManager.assignFeatureToHole(feat, holeNumber);
+        this.ui.updateHolesList(
+          this.courseManager.courseData.holes,
+          this.courseManager.courseData.currentHoleIndex
+        );
+        if (assignedHole.number === this.courseManager.currentHole.number) {
+          if (feat.surfaceType === SurfaceType.TEE) {
+            this.courseManager.ensureTeeMarkersForFeature(feat);
+            if (this.courseManager.currentStrokes === 0) {
+              this.placeBallAtActiveTee();
+            }
+          } else if (feat.surfaceType === SurfaceType.GREEN) {
+            this.courseManager.ensurePinForGreenFeature(feat);
+            this.ball?.setTargetPin(this.courseManager.currentHole.pinPosition);
+            this.greenVisualizer?.rebuildSlopeGrid();
+          }
+        }
+        this.refreshOutliner();
+        this.updateHUDDisplay();
+        this.ui.showToast(`⛳ Assigned "${feat.name || 'Feature'}" to Hole ${holeNumber}`, 'success', 2400);
       }
     });
 
@@ -2912,6 +2939,9 @@ class FairwayStudioApp {
 
         const newIdx = this.terrain.stampedFeatures.length - 1;
         const newFeat = this.terrain.stampedFeatures[newIdx];
+        if (newFeat && this.courseManager) {
+          newFeat.holeNumber = this.courseManager.currentHole.number;
+        }
         if (newFeat && p.name && (!newFeat.name || newFeat.name.startsWith('Feature'))) {
           const sameCount = this.terrain.stampedFeatures.filter(f => f.surfaceType === p.surfaceType).length;
           newFeat.name = `${p.name} #${sameCount}`;
@@ -5613,7 +5643,8 @@ class FairwayStudioApp {
         posX: feat.centerX,
         posZ: feat.centerZ,
         isVisible: true,
-        featureIndex: i
+        featureIndex: i,
+        holeNumber: feat.holeNumber ?? hole.number
       });
     }
 
