@@ -2173,40 +2173,118 @@ export class SceneryFactory {
       this.activeDucks.push(duckInst);
     });
 
-    // Designer-only Tee Hitting Direction Arrow (points straight along +Z from central pivot)
-    const arrowRoot = new Mesh(`tee_direction_arrow_${Math.round(x)}_${Math.round(z)}`, this.scene);
+    // Designer-only Triple-AAA Holographic Broadcast Launch Arrow (points straight along +Z from central pivot)
+    const uid = `${Math.round(x)}_${Math.round(z)}`;
+    const arrowRoot = new Mesh(`tee_direction_arrow_${uid}`, this.scene);
     arrowRoot.parent = root;
     arrowRoot.isPickable = false;
 
-    const arrowMat = new StandardMaterial(`teeDirArrowMat_${Math.round(x)}_${Math.round(z)}`, this.scene);
-    arrowMat.emissiveColor = new Color3(0.14, 0.88, 0.96);
-    arrowMat.diffuseColor = new Color3(0.14, 0.88, 0.96);
-    arrowMat.disableLighting = true;
-    arrowMat.alpha = 0.88;
+    const coreMat = new PBRMaterial(`teeDirArrowCoreMat_${uid}`, this.scene);
+    coreMat.albedoColor = new Color3(0.06, 0.72, 0.96);
+    coreMat.emissiveColor = new Color3(0.10, 0.78, 0.98);
+    coreMat.metallic = 0.62;
+    coreMat.roughness = 0.18;
+    coreMat.alpha = 0.90;
+    coreMat.backFaceCulling = false;
 
-    const shaft = MeshBuilder.CreateBox(`tee_dir_shaft_${Math.round(x)}_${Math.round(z)}`, {
-      width: 0.22,
-      height: 0.05,
-      depth: 2.8
-    }, this.scene);
-    shaft.position.set(0, 0.14, 2.0);
-    shaft.material = arrowMat;
-    shaft.isPickable = false;
-    shaft.receiveShadows = false;
-    shaft.parent = arrowRoot;
+    const accentMat = new PBRMaterial(`teeDirArrowAccentMat_${uid}`, this.scene);
+    accentMat.albedoColor = new Color3(0.55, 0.94, 1.0);
+    accentMat.emissiveColor = new Color3(0.38, 0.90, 1.0);
+    accentMat.metallic = 0.35;
+    accentMat.roughness = 0.12;
+    accentMat.alpha = 0.96;
+    accentMat.backFaceCulling = false;
 
-    const head = MeshBuilder.CreateCylinder(`tee_dir_head_${Math.round(x)}_${Math.round(z)}`, {
-      diameterTop: 0,
-      diameterBottom: 0.92,
-      height: 1.05,
-      tessellation: 3
+    // Helper: builds a sculpted 3D swept-wing chevron with a raised aerodynamic center ridge
+    const createSculptedChevron = (
+      name: string,
+      tipZ: number,
+      wingBackZ: number,
+      notchZ: number,
+      halfSpan: number,
+      baseH: number,
+      ridgeH: number,
+      mat: Material
+    ) => {
+      const m = new Mesh(name, this.scene);
+      // 0: Tip, 1: Right Wing, 2: Inner Notch, 3: Left Wing, 4: Raised Center Ridge
+      // Bottom layer (+5 offset) for solid 3D thickness & crisp cast shadows
+      const positions = [
+        // Top sculpted shell
+        0, baseH, tipZ,
+        halfSpan, baseH * 0.65, wingBackZ,
+        0, baseH, notchZ,
+        -halfSpan, baseH * 0.65, wingBackZ,
+        0, ridgeH, (tipZ * 0.52 + notchZ * 0.48),
+        // Bottom flat base
+        0, 0, tipZ,
+        halfSpan, 0, wingBackZ,
+        0, 0, notchZ,
+        -halfSpan, 0, wingBackZ
+      ];
+      const indices = [
+        // Top beveled facets (4 aerodynamic panels meeting at raised ridge)
+        0, 1, 4,
+        1, 2, 4,
+        2, 3, 4,
+        3, 0, 4,
+        // Bottom cap
+        5, 7, 6,
+        5, 8, 7,
+        // Perimeter side skirts (solid 3D extrusion)
+        0, 5, 6, 0, 6, 1,
+        1, 6, 7, 1, 7, 2,
+        2, 7, 8, 2, 8, 3,
+        3, 8, 5, 3, 5, 0
+      ];
+      const normals: number[] = [];
+      VertexData.ComputeNormals(positions, indices, normals);
+      const vd = new VertexData();
+      vd.positions = positions;
+      vd.indices = indices;
+      vd.normals = normals;
+      vd.applyToMesh(m);
+      m.material = mat;
+      m.position.y = 0.10;
+      m.isPickable = false;
+      m.receiveShadows = false;
+      m.parent = arrowRoot;
+      return m;
+    };
+
+    // 1. Hero Sculpted Delta Arrowhead (swept-wing stealth profile)
+    createSculptedChevron(`tee_dir_head_${uid}`, 4.35, 2.95, 3.35, 0.68, 0.045, 0.115, coreMat);
+    // Crisp luminous inner core dart inlaid atop the arrowhead
+    createSculptedChevron(`tee_dir_head_core_${uid}`, 4.18, 3.22, 3.46, 0.34, 0.068, 0.128, accentMat);
+
+    // 2. Dual Trailing Launch Runway Chevrons (cascading directional cues)
+    createSculptedChevron(`tee_dir_chev1_${uid}`, 2.62, 1.98, 2.26, 0.46, 0.032, 0.068, accentMat);
+    createSculptedChevron(`tee_dir_chev2_${uid}`, 1.88, 1.36, 1.58, 0.36, 0.026, 0.056, coreMat);
+
+    // 3. Sleek Tapered Central Launch Rail connecting pivot halo to arrowhead
+    const rail = MeshBuilder.CreateBox(`tee_dir_shaft_${uid}`, {
+      width: 0.11,
+      height: 0.035,
+      depth: 2.65
     }, this.scene);
-    head.rotation.x = Math.PI / 2;
-    head.position.set(0, 0.14, 3.85);
-    head.material = arrowMat;
-    head.isPickable = false;
-    head.receiveShadows = false;
-    head.parent = arrowRoot;
+    rail.position.set(0, 0.115, 2.15);
+    rail.material = coreMat;
+    rail.isPickable = false;
+    rail.receiveShadows = false;
+    rail.parent = arrowRoot;
+
+    // 4. Subtle Luminous Pivot Halo Ring framing the exact Tee Box center / ball position
+    const halo = MeshBuilder.CreateTorus(`tee_dir_halo_${uid}`, {
+      diameter: 0.72,
+      thickness: 0.045,
+      tessellation: 32
+    }, this.scene);
+    halo.position.set(0, 0.105, 0);
+    halo.scaling.y = 0.45;
+    halo.material = accentMat;
+    halo.isPickable = false;
+    halo.receiveShadows = false;
+    halo.parent = arrowRoot;
 
     // Orient entire group towards the green/target around the central pivot
     const angleToGreen = Math.atan2(greenX - x, greenZ - z);
