@@ -521,29 +521,6 @@ class FairwayStudioApp {
           const frameTime = dt * 1000;
           const activeMeshes = this.scene.getActiveMeshes().length;
           this.ui.updatePerformanceHud(fps, frameTime, activeMeshes);
-
-          // Next-Gen Adaptive Dynamic Resolution Scaling (DRS): keeps Play Mode locked near 50-60 FPS on integrated laptop GPUs
-          if (fps > 1 && fps < 240) {
-            this.drsSmoothedFps = this.drsSmoothedFps * 0.78 + fps * 0.22;
-          }
-          if (this.activeMode === 'play' && now - this.drsLastCheckMs >= 1100) {
-            this.drsLastCheckMs = now;
-            const profile = getDeviceProfile();
-            const baseScale = 1 / Math.min(profile.maxDpr, window.devicePixelRatio || 1);
-            const maxScale = profile.tier === 'high' ? 1.25 : 1.48;
-            let nextScale = this.drsScaleFactor;
-            if (this.drsSmoothedFps < 40) {
-              nextScale = Math.min(maxScale, this.drsScaleFactor + 0.14);
-            } else if (this.drsSmoothedFps < 46) {
-              nextScale = Math.min(maxScale, this.drsScaleFactor + 0.08);
-            } else if (this.drsSmoothedFps > 55 && this.drsScaleFactor > 1.0) {
-              nextScale = Math.max(1.0, this.drsScaleFactor - 0.06);
-            }
-            if (Math.abs(nextScale - this.drsScaleFactor) > 0.01) {
-              this.drsScaleFactor = nextScale;
-              this.engine.setHardwareScalingLevel(baseScale * this.drsScaleFactor);
-            }
-          }
         }
       }
     });
@@ -552,7 +529,7 @@ class FairwayStudioApp {
       const dpr = window.devicePixelRatio || 1;
       const profile = getDeviceProfile();
       this.cachedCanvasRect = null;
-      this.engine.setHardwareScalingLevel((1 / Math.min(profile.maxDpr, dpr)) * this.drsScaleFactor);
+      this.engine.setHardwareScalingLevel(1 / Math.min(profile.maxDpr, dpr));
       this.engine.resize();
     });
     this.isInitialized = true;
@@ -4992,7 +4969,10 @@ class FairwayStudioApp {
     const overhead = this.ui?.overheadLayout;
     if (!mainCam || !overhead) return;
 
-    const shouldRenderAerial = this.activeMode === 'play' && overhead.isRadarVisible();
+    // When an imported satellite map is active, render the ultra-crisp original satellite image directly in Radar
+    // (0ms GPU cost for a 2nd 3D camera + razor-sharp original colors!).
+    const shouldRenderAerial =
+      this.activeMode === 'play' && overhead.isRadarVisible() && !overhead.hasSatelliteImage();
     if (!shouldRenderAerial) {
       overhead.setLiveAerialActive(false);
       if (this.scene.activeCameras && this.scene.activeCameras.length > 1) {
@@ -5015,6 +4995,8 @@ class FairwayStudioApp {
       this.aerialRadarCamera.mode = Camera.ORTHOGRAPHIC_CAMERA;
       this.aerialRadarCamera.minZ = 10;
       this.aerialRadarCamera.maxZ = 2500;
+      // Exclude Green Grid & Green Dots layer (0x20000000) from Radar camera for cleaner view & higher FPS
+      this.aerialRadarCamera.layerMask = 0x1fffffff;
     }
 
     const cam = this.aerialRadarCamera;

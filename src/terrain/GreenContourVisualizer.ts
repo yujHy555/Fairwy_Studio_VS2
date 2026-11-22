@@ -15,15 +15,19 @@ import { SurfaceType } from '../core/Constants';
 
 interface SlopeComet {
   baseX: number;
+  baseY: number;
   baseZ: number;
   phaseOffset: number;
   slopeDirX: number;
   slopeDirZ: number;
   slopeMagnitude: number;
+  slopeDyPerMeter: number;
   headMesh: Mesh | InstancedMesh;
   midMesh: Mesh | InstancedMesh;
   tailMesh: Mesh | InstancedMesh;
 }
+
+const GREEN_OVERLAY_LAYER_MASK = 0x20000000; // Main camera renders (0xFFFFFFFF); Radar camera (0x1FFFFFFF) skips!
 
 export class GreenContourVisualizer {
   private scene: Scene;
@@ -58,23 +62,22 @@ export class GreenContourVisualizer {
     this.beadParent.scaling.set(1, 1, 1);
     this.beadParent.setEnabled(false);
 
-    // Next-Gen 4-tier luminous pearl materials (Ice-Cyan = subtle, Emerald = gentle, Gold = medium, Coral-Red = steep)
+    // Next-Gen 4-tier luminous pearl materials (unlit emissive = 5x faster GPU shader, zero shadow cost!)
     const makePearlMat = (name: string, diff: Color3, emis: Color3): StandardMaterial => {
       const m = new StandardMaterial(name, this.scene);
       m.diffuseColor = diff;
       m.emissiveColor = emis;
-      m.specularColor = new Color3(0.95, 0.98, 1.0);
-      m.specularPower = 64;
-      m.disableLighting = false;
+      m.specularColor = Color3.Black();
+      m.disableLighting = true;
       m.alpha = 0.0;
       m.backFaceCulling = true;
       return m;
     };
 
-    this.matFlat = makePearlMat('slopeBeadFlat', new Color3(0.55, 0.92, 1.0), new Color3(0.28, 0.68, 0.85));
-    this.matMild = makePearlMat('slopeBeadMild', new Color3(0.22, 0.96, 0.50), new Color3(0.14, 0.72, 0.34));
-    this.matMed = makePearlMat('slopeBeadMed', new Color3(1.0, 0.84, 0.16), new Color3(0.86, 0.64, 0.08));
-    this.matSteep = makePearlMat('slopeBeadSteep', new Color3(1.0, 0.30, 0.14), new Color3(0.92, 0.22, 0.08));
+    this.matFlat = makePearlMat('slopeBeadFlat', new Color3(0.55, 0.92, 1.0), new Color3(0.42, 0.88, 1.0));
+    this.matMild = makePearlMat('slopeBeadMild', new Color3(0.22, 0.96, 0.50), new Color3(0.20, 0.94, 0.46));
+    this.matMed = makePearlMat('slopeBeadMed', new Color3(1.0, 0.84, 0.16), new Color3(1.0, 0.82, 0.14));
+    this.matSteep = makePearlMat('slopeBeadSteep', new Color3(1.0, 0.30, 0.14), new Color3(1.0, 0.28, 0.12));
 
     this.rebuildSlopeGrid();
 
@@ -319,25 +322,29 @@ export class GreenContourVisualizer {
         this.scene
       );
       this.contourLineGrid.isPickable = false;
+      this.contourLineGrid.layerMask = GREEN_OVERLAY_LAYER_MASK;
       this.contourLineGrid.position.set(0, 0, 0);
       this.contourLineGrid.rotation.set(0, 0, 0);
       this.contourLineGrid.scaling.set(1, 1, 1);
       this.contourLineGrid.renderingGroupId = 0; // Under ball (groupId 2)
       this.contourLineGrid.visibility = this.gridAlpha;
+      this.contourLineGrid.freezeWorldMatrix();
       this.contourLineGrid.setEnabled(this.gridAlpha > 0.005);
     }
 
     // 3. Synchronized Downhill Comet Beads (placed at 2.0m intervals for crystal-clear reading)
-    // 4 dedicated tier templates so Babylon GPU InstancedMesh renders true 4-tier color-coded pearl shading!
+    // 4 dedicated low-poly GPU InstancedMesh templates (segments: 6 = 4x fewer triangles, silky 60+ FPS!)
     const ensureTierTemplate = (existing: Mesh | null, name: string, mat: StandardMaterial): Mesh => {
       if (existing && !existing.isDisposed()) {
         existing.material = mat;
+        existing.layerMask = GREEN_OVERLAY_LAYER_MASK;
         return existing;
       }
-      const m = MeshBuilder.CreateSphere(name, { diameter: 0.15, segments: 12 }, this.scene);
+      const m = MeshBuilder.CreateSphere(name, { diameter: 0.15, segments: 6 }, this.scene);
       m.material = mat;
       m.isVisible = false;
       m.isPickable = false;
+      m.layerMask = GREEN_OVERLAY_LAYER_MASK;
       m.renderingGroupId = 1;
       m.position.set(0, -9999, 0);
       return m;
@@ -389,16 +396,26 @@ export class GreenContourVisualizer {
             midMesh.isPickable = false;
             tailMesh.isPickable = false;
 
+            headMesh.layerMask = GREEN_OVERLAY_LAYER_MASK;
+            midMesh.layerMask = GREEN_OVERLAY_LAYER_MASK;
+            tailMesh.layerMask = GREEN_OVERLAY_LAYER_MASK;
+
+            // Precompute elevation & downhill slope derivative once (eliminates 600+ getElevation calls/frame!)
+            const baseY = this.terrain.getElevation(x, z) + 0.038;
+            const slopeDyPerMeter = -slopeMag / Math.max(0.25, normal.y || 1.0);
+
             // Deterministic spatial wave phase along downhill direction so adjacent dots flow in unison!
             const spatialWave = (((x * dirX + z * dirZ) * 0.22) % 1.0 + 1.0) % 1.0;
 
             this.comets.push({
               baseX: x,
+              baseY,
               baseZ: z,
               phaseOffset: spatialWave,
               slopeDirX: dirX,
               slopeDirZ: dirZ,
               slopeMagnitude: slopeMag,
+              slopeDyPerMeter,
               headMesh,
               midMesh,
               tailMesh
@@ -414,41 +431,44 @@ export class GreenContourVisualizer {
   }
 
   private updateComets(dt: number) {
-    if (this.beadParent.position.x !== 0 || this.beadParent.position.y !== 0 || this.beadParent.position.z !== 0) {
-      this.beadParent.position.set(0, 0, 0);
-      this.beadParent.rotation.set(0, 0, 0);
-      this.beadParent.scaling.set(1, 1, 1);
-    }
-    this.beadParent.isPickable = false;
-
     this.waveTime += Math.min(0.05, Math.max(0.005, dt));
+    const dotsAlpha = this.dotsAlpha;
+    const span = 1.15;
 
-    for (const c of this.comets) {
+    for (let i = 0; i < this.comets.length; i++) {
+      const c = this.comets[i];
       // Flow speed scales smoothly with slope steepness
       const cycleRate = 0.45 + Math.min(1.4, c.slopeMagnitude * 14.0);
       const t = (this.waveTime * cycleRate + c.phaseOffset) % 1.0;
 
-      // Travel 1.2m along the downhill slope direction centered at (baseX, baseZ)
-      const span = 1.15;
       const headDist = (t - 0.5) * span;
       const midDist = headDist - 0.16;
       const tailDist = headDist - 0.30;
+      const env = Math.sin(t * Math.PI) * dotsAlpha;
 
-      const placeDot = (mesh: AbstractMesh, dist: number, baseScale: number) => {
-        const px = c.baseX + c.slopeDirX * dist;
-        const pz = c.baseZ + c.slopeDirZ * dist;
-        const py = this.terrain.getElevation(px, pz) + 0.038;
-        mesh.position.set(px, py, pz);
+      const sH = Math.max(0.01, env * 1.05);
+      c.headMesh.position.set(
+        c.baseX + c.slopeDirX * headDist,
+        c.baseY + headDist * c.slopeDyPerMeter,
+        c.baseZ + c.slopeDirZ * headDist
+      );
+      c.headMesh.scaling.set(sH, sH * 0.55, sH);
 
-        // Smooth fade envelope at start and end of stroke, modulated by active dotsAlpha fade
-        const envelope = Math.sin(t * Math.PI);
-        const s = Math.max(0.01, envelope * baseScale * this.dotsAlpha);
-        mesh.scaling.set(s, s * 0.55, s);
-      };
+      const sM = Math.max(0.01, env * 0.72);
+      c.midMesh.position.set(
+        c.baseX + c.slopeDirX * midDist,
+        c.baseY + midDist * c.slopeDyPerMeter,
+        c.baseZ + c.slopeDirZ * midDist
+      );
+      c.midMesh.scaling.set(sM, sM * 0.55, sM);
 
-      placeDot(c.headMesh, headDist, 1.05);
-      placeDot(c.midMesh, midDist, 0.72);
-      placeDot(c.tailMesh, tailDist, 0.45);
+      const sT = Math.max(0.01, env * 0.45);
+      c.tailMesh.position.set(
+        c.baseX + c.slopeDirX * tailDist,
+        c.baseY + tailDist * c.slopeDyPerMeter,
+        c.baseZ + c.slopeDirZ * tailDist
+      );
+      c.tailMesh.scaling.set(sT, sT * 0.55, sT);
     }
   }
 

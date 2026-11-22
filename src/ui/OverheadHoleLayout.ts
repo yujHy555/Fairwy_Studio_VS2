@@ -916,8 +916,21 @@ export class OverheadHoleLayout {
     return { tee, pin };
   }
 
+  public hasSatelliteImage(): boolean {
+    return Boolean(
+      this.lastData?.satelliteImageUrl &&
+      this.satImg &&
+      this.satImg.complete &&
+      this.satImg.naturalWidth > 0
+    );
+  }
+
   private ensureSatelliteImageLoaded(url?: string) {
-    if (!url) return;
+    if (!url) {
+      this.satImgUrl = null;
+      this.satImg = null;
+      return;
+    }
     if (this.satImgUrl === url) return;
     this.satImgUrl = url;
     const img = new Image();
@@ -942,8 +955,15 @@ export class OverheadHoleLayout {
     const H = this.canvasHeight;
     const data = this.lastData;
     const { tee: effTee, pin: effPin } = this.getEffectiveTeeAndPin();
+    const hasSat = Boolean(
+      this.satImg &&
+      this.satImg.complete &&
+      this.satImg.naturalWidth > 0 &&
+      data.terrainWidth > 0 &&
+      data.terrainLength > 0
+    );
 
-    // 1. Live Dedicated 3D Aerial Camera Backdrop OR 2D Broadcast Backdrop
+    // 1. Live Dedicated 3D Aerial Camera Backdrop OR Ultra-Crisp Original Satellite / 2D Backdrop
     ctx.clearRect(0, 0, W, H);
     if (!this.liveAerialActive) {
       const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.44, 18, W * 0.5, H * 0.5, Math.max(W, H) * 0.72);
@@ -953,9 +973,11 @@ export class OverheadHoleLayout {
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, W, H);
 
-      // Draw imported MapNG satellite/terrain texture synced 1:1 with the rotated hole corridor!
-      if (this.satImg && this.satImg.complete && this.satImg.naturalWidth > 0 && data.terrainWidth > 0 && data.terrainLength > 0) {
+      // Draw original imported satellite color texture at full clarity & 1:1 world alignment!
+      if (hasSat && this.satImg) {
         ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         const originC = this.worldToCanvas(0, 0);
         const axisXC = this.worldToCanvas(data.terrainWidth, 0);
         const axisZC = this.worldToCanvas(0, data.terrainLength);
@@ -963,15 +985,15 @@ export class OverheadHoleLayout {
         const b = (axisXC.y - originC.y) / data.terrainWidth;
         const c = (axisZC.x - originC.x) / data.terrainLength;
         const d = (axisZC.y - originC.y) / data.terrainLength;
-        ctx.globalAlpha = 0.86;
+        ctx.globalAlpha = 1.0;
         ctx.transform(a, b, c, d, originC.x, originC.y);
         ctx.drawImage(this.satImg, 0, 0, data.terrainWidth, data.terrainLength);
         ctx.restore();
       }
     }
 
-    // Subtle organic topographic contour bands (only in 2D fallback mode)
-    if (!this.liveAerialActive) {
+    // Subtle organic topographic contour bands (only when neither live 3D nor satellite photo is active)
+    if (!this.liveAerialActive && !hasSat) {
       ctx.save();
       ctx.strokeStyle = 'rgba(134, 239, 172, 0.055)';
       ctx.lineWidth = 1.1;
@@ -1033,8 +1055,8 @@ export class OverheadHoleLayout {
       }
     }
 
-    // 3. Stamped Hole Architecture Features (only needed in 2D fallback; live 3D Aerial Camera renders the actual 3D course!)
-    if (!this.liveAerialActive) {
+    // 3. Stamped Hole Architecture Features (only in pure 2D fallback; live 3D Aerial Camera & crisp Satellite photo render the actual course!)
+    if (!this.liveAerialActive && !hasSat) {
       for (const feat of data.features) {
         this.drawFeatureOnOverhead(ctx, feat);
       }
