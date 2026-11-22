@@ -122,6 +122,23 @@ export const HDRI_PRESETS: HdriPreset[] = [
     thumbnailImg: '/textures/hdri_thumbs/noon_grass.png'
   },
   {
+    id: 'the_lost_city',
+    name: 'The Lost City 2K',
+    file: '/hdris/the_lost_city_2k.hdr',
+    resolution: '2K',
+    vibe: 'Golden low-angle sun over dramatic stone ruins and crisp sky',
+    category: 'dramatic',
+    sunAzimuth: 216,
+    sunElevation: 22,
+    sunIntensity: 1.75,
+    sunColor: '#ffeed6',
+    envIntensity: 0.65,
+    shadowDarkness: 0.24,
+    rotationDeg: 0,
+    thumbnailBg: 'linear-gradient(135deg, #1e293b 0%, #3b82f6 50%, #d97706 100%)',
+    thumbnailImg: '/textures/hdri_thumbs/the_lost_city.png'
+  },
+  {
     id: 'approaching_storm',
     name: 'Approaching Storm 4K',
     file: '/approaching_storm_4k.hdr',
